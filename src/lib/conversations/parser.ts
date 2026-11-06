@@ -467,46 +467,214 @@ export function resolveDirections(
   });
 }
 
+/** Two-way chats are the only shape Moti AI can analyse today. */
+export const MAX_DIRECT_PARTICIPANTS = 2;
+
 /**
- * Suggests which label probably represents the Moti user.
- *
- * Only "You" and "Me" are treated as self, because those are unambiguous.
- * A participant count of exactly two is required: in a group chat we refuse to
- * guess rather than attributing the wrong person's words to the user.
+ * Client-safe rule for whether an export lists exactly two distinct senders.
+ * Deliberately takes only the participant labels so it can be imported into a
+ * Client Component without pulling in the parser's date logic.
  */
-export function suggestSelfLabels(detectedParticipants: readonly string[]): {
+export function isDirectConversation(detectedParticipants: readonly string[]): boolean {
+  return detectedParticipants.length >= 1 && detectedParticipants.length <= MAX_DIRECT_PARTICIPANTS;
+}
+
+export type ParticipationAssessment = {
+  /** Labels that plausibly represent the Moti user. Empty when unsure. */
   labels: string[];
+  /** True only when exactly one participant is unambiguously "self". */
   confident: boolean;
+  /** True when more than two senders were found. */
+  isGroup: boolean;
   reason: string;
-} {
-  const normalised = detectedParticipants.map((label) => label.trim().toLowerCase());
-  const obvious = detectedParticipants.filter((label) =>
-    ["you", "me"].includes(label.trim().toLowerCase()),
-  );
+};
 
-  if (obvious.length > 0) {
-    return {
-      labels: obvious,
-      confident: true,
-      reason: `The export labels your own messages as "${obvious.join('", "')}".`,
-    };
-  }
+/**
+ * Assesses who is who, conservatively.
+ *
+ * Group detection always wins: a group chat that happens to contain a "You" row
+ * is still a group chat, and treating it as one-to-one would silently fold
+ * every other participant into "the contact". Until group participant mapping
+ * exists, groups are reported as groups so the caller can park the import.
+ *
+ * For direct chats, "You"/"Me" is accepted only when it is the single obvious
+ * self label and at least one other participant exists. Exports using the
+ * user's real WhatsApp display name cannot be resolved automatically — that is
+ * what the confirmation step is for.
+ */
+export function suggestSelfLabels(
+  detectedParticipants: readonly string[],
+): ParticipationAssessment {
+  const cleaned = detectedParticipants.map((label) => label.trim()).filter((label) => label !== "");
+  const normalised = cleaned.map((label) => label.toLowerCase());
 
-  if (normalised.length === 2) {
+  if (normalised.length === 0) {
     return {
       labels: [],
       confident: false,
+      isGroup: false,
+      reason: "No participants were detected in this file.",
+    };
+  }
+
+  if (cleaned.length > MAX_DIRECT_PARTICIPANTS) {
+    return {
+      labels: [],
+      confident: false,
+      isGroup: true,
       reason:
-        'Two participants were found but neither is labelled "You". Choose which one is you before analysis.',
+        `This export contains ${cleaned.length} participants (${cleaned.join(", ")}), so it is a ` +
+        "group conversation. Moti AI analyses one-to-one chats only, so nothing was imported. " +
+        "Export the individual chat with this person instead.",
+    };
+  }
+
+  // One distinct sender: no counterpart, so nothing can be attributed.
+  if (cleaned.length === 1) {
+    return {
+      labels: [],
+      confident: false,
+      isGroup: false,
+      reason:
+        "Only one participant was found in this file, so there is no conversation to analyse. " +
+        "Check that the export contains both sides of the chat.",
+    };
+  }
+
+  const obvious = cleaned.filter((label) => ["you", "me"].includes(label.toLowerCase()));
+
+  if (obvious.length === 1) {
+    const [selfLabel] = obvious as [string];
+    return {
+      labels: [selfLabel],
+      confident: true,
+      isGroup: false,
+      reason: `The export labels your own messages as "${selfLabel}".`,
+    };
+  }
+
+  // Both sides look like the user ("You" and "Me"): ambiguous, so ask.
+  if (obvious.length > 1) {
+    return {
+      labels: [],
+      confident: false,
+      isGroup: false,
+      reason:
+        "More than one participant is labelled as you, so Moti AI cannot tell which side is " +
+        "yours. Choose your own name before anything is stored.",
     };
   }
 
   return {
     labels: [],
     confident: false,
+    isGroup: false,
     reason:
-      normalised.length > 2
-        ? "This looks like a group conversation. Moti AI analyses one-to-one chats, so pick the participant to focus on."
-        : "No participants were detected in this file.",
+      'Both participants are listed by name rather than as "You", so Moti AI needs to know ' +
+      "which one is you before it can separate the two sides of the conversation.",
   };
+}
+
+/**
+ * Determines the counterpart of the Moti user in a direct chat.
+ * Returns null unless a self label was given and exactly one other participant
+ * remains, so a group can never collapse into a single contact.
+ */
+export function resolveContactLabel(
+  detectedParticipants: readonly string[],
+  selfLabels: readonly string[],
+): string | null {
+  const cleaned = detectedParticipants.map((label) => label.trim()).filter((label) => label !== "");
+
+  if (cleaned.length < 2 || cleaned.length > MAX_DIRECT_PARTICIPANTS) return null;
+  if (selfLabels.length === 0) return null;
+
+  const normalisedSelf = new Set(selfLabels.map((label) => label.trim().toLowerCase()));
+  const others = cleaned.filter((label) => !normalisedSelf.has(label.toLowerCase()));
+
+  return others.length === 1 ? (others[0] as string) : null;
+}
+
+export type ValidationIssueCode =
+  | "empty_file"
+  | "no_valid_messages"
+  | "unsupported_format"
+  | "group_conversation"
+  | "no_participants";
+
+export type ValidationIssue = {
+  code: ValidationIssueCode;
+  message: string;
+};
+
+export type ParsedExportValidation = {
+  ok: boolean;
+  issue: ValidationIssue | null;
+  /** Messages that can actually be stored (excludes system rows). */
+  messageCount: number;
+  participantCount: number;
+};
+
+/**
+ * Decides whether a parse result is good enough to become an import.
+ *
+ * An empty or unreadable file must never be reported as a successful import, so
+ * this is checked before anything is written or any status is set to
+ * "completed".
+ */
+export function validateParsedExport(parsed: ParseResult): ParsedExportValidation {
+  const storable = parsed.messages.filter((message) => message.kind !== "system");
+  const participantCount = parsed.detectedParticipants.length;
+
+  if (parsed.totalLines === 0 || (parsed.messages.length === 0 && parsed.warnings.length === 0)) {
+    return {
+      ok: false,
+      issue: { code: "empty_file", message: "That file is empty." },
+      messageCount: 0,
+      participantCount,
+    };
+  }
+
+  if (storable.length === 0) {
+    return {
+      ok: false,
+      issue: {
+        code: "no_valid_messages",
+        message:
+          "No readable messages were found in this file. Upload the .txt export WhatsApp " +
+          "produced (chat → More → Export chat → Without media).",
+      },
+      messageCount: 0,
+      participantCount,
+    };
+  }
+
+  if (participantCount === 0) {
+    return {
+      ok: false,
+      issue: {
+        code: "no_participants",
+        message:
+          "No sender names could be read from this export, so messages cannot be attributed.",
+      },
+      messageCount: storable.length,
+      participantCount,
+    };
+  }
+
+  if (participantCount > MAX_DIRECT_PARTICIPANTS) {
+    return {
+      ok: false,
+      issue: {
+        code: "group_conversation",
+        message:
+          `This export has ${participantCount} participants, which makes it a group chat. ` +
+          "Moti AI analyses one-to-one conversations only.",
+      },
+      messageCount: storable.length,
+      participantCount,
+    };
+  }
+
+  return { ok: true, issue: null, messageCount: storable.length, participantCount };
 }

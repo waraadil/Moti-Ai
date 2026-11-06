@@ -86,7 +86,18 @@ export type CreateMemoryInput = z.infer<typeof createMemorySchema>;
 // Imports
 // --------------------------------------------------------------------------
 
-const ALLOWED_UPLOAD_EXTENSIONS = [".txt", ".zip"] as const;
+/**
+ * Only plain-text exports are accepted.
+ *
+ * `.zip` exports are rejected on purpose: the archive must be unpacked and the
+ * inner chat file chosen deliberately, and the current pipeline stores exactly
+ * one text file. Advertising zip support we do not have would be a lie.
+ */
+export const ALLOWED_UPLOAD_EXTENSIONS = [".txt"] as const;
+
+export const dateOrderSchema = z.enum(["DMY", "MDY"]).default("DMY");
+
+export type DateOrder = z.infer<typeof dateOrderSchema>;
 
 export const importUploadMetaSchema = z.object({
   filename: z
@@ -96,17 +107,32 @@ export const importUploadMetaSchema = z.object({
     .max(255)
     .refine(
       (name) => ALLOWED_UPLOAD_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext)),
-      "Upload the .txt or .zip file WhatsApp exported, unmodified.",
+      "Upload the .txt export WhatsApp produced. .zip archives are not supported yet: unzip it and upload the chat .txt file.",
     ),
   byteSize: z
     .number()
     .int()
     .positive("The file appears to be empty.")
     .max(MAX_UPLOAD_BYTES, "Exports must be 50 MB or smaller."),
-  contactId: z.uuid().optional(),
+  contactId: z.uuid(),
+  dateOrder: dateOrderSchema,
 });
 
 export type ImportUploadMeta = z.infer<typeof importUploadMetaSchema>;
+
+/**
+ * Confirms which participant is the Moti user before any messages are written.
+ * `selfLabels` accepts several labels because some exports alternate between
+ * "You" and a display name for the same person.
+ */
+export const confirmParticipantsSchema = z.object({
+  importId: z.uuid(),
+  contactId: z.uuid(),
+  selfLabels: z.array(z.string().trim().min(1).max(160)).min(1, "Select which participant is you."),
+  dateOrder: dateOrderSchema,
+});
+
+export type ConfirmParticipantsInput = z.infer<typeof confirmParticipantsSchema>;
 
 // --------------------------------------------------------------------------
 // Pagination and search

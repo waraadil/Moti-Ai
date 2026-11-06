@@ -196,7 +196,7 @@ export function buildMessageRows(params: {
   source_fingerprint: string;
 }> {
   if (params.messages.length !== params.directions.length) {
-    throw new ValidationError("Message and direction counts disagree.");
+    throw new ValidationError({}, "Message and direction counts disagree.");
   }
 
   return params.messages.map((message, index) => {
@@ -251,4 +251,61 @@ export async function createImportDownloadUrl(
 
   if (error) throw error;
   return data.signedUrl;
+}
+
+/**
+ * Deletes the stored export object for an import.
+ *
+ * Called when an import fails or is rejected, so the private bucket does not
+ * accumulate files that no database row points at. Failures are logged rather
+ * than thrown: the user-facing outcome is already decided, and a transient
+ * storage error must not turn a clean rejection into an error page.
+ */
+export async function removeImportObject(
+  supabase: ServerSupabaseClient,
+  storagePath: string,
+): Promise<{ removed: boolean; error: string | null }> {
+  const { error } = await supabase.storage.from(CHAT_IMPORTS_BUCKET).remove([storagePath]);
+
+  if (error) {
+    console.error("[moti] failed to remove orphaned import object", {
+      storagePath,
+      message: error.message,
+    });
+    return { removed: false, error: error.message };
+  }
+
+  return { removed: true, error: null };
+}
+
+/** Removes only the object when it lives under this user's folder prefix. */
+export async function removeImportObjectForUser(
+  supabase: ServerSupabaseClient,
+  userId: string,
+  storagePath: string,
+): Promise<{ removed: boolean; error: string | null }> {
+  if (!storagePath.startsWith(`${userId}/`)) {
+    // Never delete a path outside the caller's own folder.
+    return { removed: false, error: "refused: path is outside the user's folder" };
+  }
+  return removeImportObject(supabase, storagePath);
+}
+
+/**
+ * Deletes an import row. Used when the file was rejected before any messages
+ * were written, so leaving a `failed` row behind would just be noise.
+ * Messages cascade, but there are none at this point.
+ */
+export async function deleteImport(
+  supabase: ServerSupabaseClient,
+  userId: string,
+  importId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from("chat_imports")
+    .delete()
+    .eq("user_id", userId)
+    .eq("id", importId);
+
+  if (error) throw error;
 }

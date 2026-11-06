@@ -95,7 +95,8 @@ describe("buildMessageRows", () => {
     } catch (error) {
       expect(isAppError(error)).toBe(true);
       expect((error as AppError).code).toBe("bad_request");
-      expect((error as AppError).details).toMatch(/counts disagree/i);
+      // The message must be user-facing, not buried in `details`.
+      expect((error as AppError).userMessage).toMatch(/counts disagree/i);
     }
   });
 

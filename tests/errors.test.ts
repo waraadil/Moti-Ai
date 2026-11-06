@@ -59,3 +59,18 @@ describe("application errors", () => {
     expect(error.cause).toBe(cause);
   });
 });
+
+describe("ValidationError argument order", () => {
+  it("treats the first argument as details and the second as the user message", () => {
+    const error = new ValidationError({}, "Select which participant is you.");
+
+    expect(error.userMessage).toBe("Select which participant is you.");
+    expect(error.details).toEqual({});
+    expect(toErrorResponse(error).body.error.message).toBe("Select which participant is you.");
+  });
+
+  it("falls back to a generic message when only details are supplied", () => {
+    const error = new ValidationError({ email: "required" });
+    expect(error.userMessage).toBe("Some of the submitted values are not valid.");
+  });
+});

@@ -9,6 +9,11 @@ your own voice.
 **What this is not:** it does not connect to WhatsApp, does not read your messages in any other
 way, and never sends anything on your behalf. There is no live automation, by design.
 
+**Import is two steps, on purpose.** Moti AI reads the export, then shows you every participant and
+asks which one is you. Messages are written only after you confirm — and the contact association
+can be corrected at that point. Getting this wrong would permanently mislabel every message,
+because stored messages are immutable.
+
 ---
 
 ## Status of this build
@@ -27,8 +32,12 @@ contain the AI analysis pipeline.
 | Responsive application shell (contacts, imports, settings) | Working |
 | Add a contact, archive a contact | Working |
 | Upload a WhatsApp `.txt` export to private Storage | Working |
-| Parse an export into attributable messages | Working, 29 unit tests |
+| Parse an export into attributable messages | Working |
+| Group conversations rejected rather than mis-analysed | Working |
+| Participant confirmation before anything is stored | Working |
 | Persist messages idempotently with duplicate-import protection | Working |
+| Duplicate detection before upload, with Storage cleanup | Working |
+| DMY/MDY date format carried from preview through to storage | Working |
 | Dry-run parse preview API (`POST /api/imports/parse`) | Working |
 | Health endpoint reporting real configuration state | Working |
 
@@ -40,8 +49,8 @@ These are marked **Not analysed** in the UI rather than shown with placeholder v
 - Relationship context extraction
 - Memory + evidence extraction
 - Reply draft generation
-- Sender-mapping UI for exports where no participant is labelled "You"
-  (such imports are stored and parked as `needs_review`, not guessed at)
+- `.zip` exports (rejected with an explanation: unzip and upload the `.txt`)
+- Group chat participant mapping (group exports are rejected outright)
 
 ---
 
@@ -105,7 +114,9 @@ Fill in from **Project Settings → Data API / API keys**:
 npm run dev
 ```
 
-Open http://localhost:3000, create an account, add a contact, then import an export.
+Open http://localhost:3000, create an account, add a contact, then import an export. The import
+screen lets you pick the date format (Day/Month/Year or Month/Day/Year) — the same setting is used
+for the preview, the stored import and any later re-confirmation.
 
 ---
 
@@ -192,10 +203,14 @@ npm run format         # Prettier
 
 ## Tests
 
-`npm run test` runs 68 tests. The schema suite boots a real PostgreSQL engine
+`npm run test` runs 106 tests. The schema suite boots a real PostgreSQL engine
 ([PGlite](https://github.com/electric-sql/pglite)) in memory, applies every migration, and then
 asserts the guarantees above actually hold: RLS isolation, cross-user reference rejection,
 immutability, cascade behaviour, constraint enforcement and storage policies.
+
+The import suite runs the real pipeline against an in-memory fake of the queries it uses, covering
+rejection of empty/unreadable/group/`.zip` files, duplicate uploads, Storage cleanup, and the
+confirm-then-store flow (including exports where the user appears under their real name).
 
 No test relies on invented credentials or a remote service.
 
@@ -238,11 +253,12 @@ tests/                 parser, env, errors, schema
 
 ## Roadmap
 
-1. Sender-mapping UI for `needs_review` imports (finish the import loop).
-2. Communication profile analysis over stored messages, versioned via `analysis_versions`.
-3. Memory + evidence extraction with per-memory citations in the UI.
-4. Reply drafting grounded in profile + memories, with accept/edit/discard tracking.
-5. Data export and deletion tooling.
+1. `.zip` support (extract the inner chat file server-side).
+2. Group conversation participant mapping.
+3. Communication profile analysis over stored messages, versioned via `analysis_versions`.
+4. Memory + evidence extraction with per-memory citations in the UI.
+5. Reply drafting grounded in profile + memories, with accept/edit/discard tracking.
+6. Data export and deletion tooling.
 
 ## License
 

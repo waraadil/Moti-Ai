@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyBody,
+  isDirectConversation,
   parseTimestamp,
   parseWhatsAppExport,
+  resolveContactLabel,
   resolveDirections,
   suggestSelfLabels,
+  validateParsedExport,
 } from "@/lib/conversations/parser";
 
 // Real-shaped Android export (English, 24h clock, DMY).
@@ -223,12 +226,189 @@ describe("suggestSelfLabels", () => {
     const suggestion = suggestSelfLabels(["Alice", "Bob"]);
     expect(suggestion.confident).toBe(false);
     expect(suggestion.labels).toEqual([]);
-    expect(suggestion.reason).toMatch(/choose which one is you/i);
+    expect(suggestion.isGroup).toBe(false);
+    expect(suggestion.reason).toMatch(/which one is you/i);
   });
 
   it("flags group conversations instead of analysing the wrong person", () => {
     const suggestion = suggestSelfLabels(["Alice", "Bob", "Carol"]);
     expect(suggestion.confident).toBe(false);
     expect(suggestion.reason).toMatch(/group/i);
+  });
+});
+
+// A three-person group where the user's own rows are labelled "You". This is
+// exactly the shape that used to be misread as a one-to-one chat.
+const GROUP_EXPORT_WITH_YOU = [
+  "12/03/2024, 09:16 - Priya: Anyone free Saturday?",
+  "12/03/2024, 09:17 - You: I am in",
+  "12/03/2024, 09:18 - Rohan: Same here",
+  "12/03/2024, 09:19 - Priya: Great, booking for three",
+].join("\n");
+
+// Two individuals, neither labelled You: the user's own display name is used.
+const NAMED_SELF_EXPORT = [
+  "12/03/2024, 09:16 - Priya: Are you coming Saturday?",
+  "12/03/2024, 09:17 - Wara: Yes, bringing the cake",
+  "12/03/2024, 09:18 - Priya: Perfect",
+].join("\n");
+
+describe("group chat safety", () => {
+  it("detects three participants and reports a group", () => {
+    const parsed = parseWhatsAppExport(GROUP_EXPORT_WITH_YOU);
+    expect(parsed.detectedParticipants).toEqual(["Priya", "You", "Rohan"]);
+
+    const suggestion = suggestSelfLabels(parsed.detectedParticipants);
+    expect(suggestion.isGroup).toBe(true);
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.labels).toEqual([]);
+  });
+
+  it('never treats a group as one-to-one just because it contains "You"', () => {
+    const parsed = parseWhatsAppExport(GROUP_EXPORT_WITH_YOU);
+    const suggestion = suggestSelfLabels(parsed.detectedParticipants);
+
+    // The old behaviour returned confident: true with labels ["You"] here.
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.labels).not.toContain("You");
+    expect(suggestion.reason).toMatch(/group/i);
+  });
+
+  it("rejects a group export during validation", () => {
+    const parsed = parseWhatsAppExport(GROUP_EXPORT_WITH_YOU);
+    const validation = validateParsedExport(parsed);
+
+    expect(validation.ok).toBe(false);
+    expect(validation.issue?.code).toBe("group_conversation");
+    expect(validation.participantCount).toBe(3);
+  });
+
+  it("cannot resolve a single contact label for a group", () => {
+    const parsed = parseWhatsAppExport(GROUP_EXPORT_WITH_YOU);
+    expect(resolveContactLabel(parsed.detectedParticipants, ["You"])).toBeNull();
+  });
+
+  it("still accepts a genuine two-person chat that uses You", () => {
+    const parsed = parseWhatsAppExport(ANDROID_EXPORT);
+    const suggestion = suggestSelfLabels(parsed.detectedParticipants);
+
+    expect(suggestion.isGroup).toBe(false);
+    expect(suggestion.confident).toBe(true);
+    expect(suggestion.labels).toEqual(["You"]);
+    expect(validateParsedExport(parsed).ok).toBe(true);
+  });
+
+  it('does not treat "Me" as self in a group either', () => {
+    const suggestion = suggestSelfLabels(["Alice", "Me", "Bob", "Carol"]);
+    expect(suggestion.isGroup).toBe(true);
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.labels).toEqual([]);
+  });
+});
+
+describe("named self labels", () => {
+  it("is not confident when the user appears under their own display name", () => {
+    const parsed = parseWhatsAppExport(NAMED_SELF_EXPORT);
+    const suggestion = suggestSelfLabels(parsed.detectedParticipants);
+
+    // Two people, no "You": needs explicit confirmation.
+    expect(suggestion.isGroup).toBe(false);
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.labels).toEqual([]);
+  });
+
+  it("resolves the counterpart once the user confirms their own name", () => {
+    const parsed = parseWhatsAppExport(NAMED_SELF_EXPORT);
+    expect(resolveContactLabel(parsed.detectedParticipants, ["Wara"])).toBe("Priya");
+    expect(resolveContactLabel(parsed.detectedParticipants, ["Priya"])).toBe("Wara");
+  });
+
+  it("maps directions correctly once the real name is confirmed", () => {
+    const parsed = parseWhatsAppExport(NAMED_SELF_EXPORT);
+    const directions = resolveDirections(parsed.messages, ["Wara"]).map((entry) => entry.direction);
+
+    expect(directions).toEqual(["incoming", "outgoing", "incoming"]);
+  });
+
+  it("still validates a two-person chat with no You label", () => {
+    const parsed = parseWhatsAppExport(NAMED_SELF_EXPORT);
+    expect(validateParsedExport(parsed).ok).toBe(true);
+  });
+});
+
+describe("isDirectConversation", () => {
+  it("accepts one or two participants only", () => {
+    expect(isDirectConversation(["A"])).toBe(true);
+    expect(isDirectConversation(["A", "B"])).toBe(true);
+    expect(isDirectConversation(["A", "B", "C"])).toBe(false);
+    expect(isDirectConversation([])).toBe(false);
+  });
+});
+
+describe("validateParsedExport", () => {
+  it("rejects an empty file", () => {
+    const validation = validateParsedExport(parseWhatsAppExport(""));
+    expect(validation.ok).toBe(false);
+    expect(validation.issue?.code).toBe("empty_file");
+  });
+
+  it("rejects a file that is not a WhatsApp export", () => {
+    const validation = validateParsedExport(
+      parseWhatsAppExport("this is a random text file\nwith no message headers at all"),
+    );
+    expect(validation.ok).toBe(false);
+    expect(["no_valid_messages", "empty_file"]).toContain(validation.issue?.code);
+    expect(validation.messageCount).toBe(0);
+  });
+
+  it("rejects a binary-looking file without valid message rows", () => {
+    const binaryish = "PK\u0003\u0004\u0014\u0000\u0000\u0000\u0008\u0000chat.txt\u0000\u0000";
+    const validation = validateParsedExport(parseWhatsAppExport(binaryish));
+    expect(validation.ok).toBe(false);
+    expect(validation.messageCount).toBe(0);
+  });
+
+  it("rejects an export containing only system lines", () => {
+    const onlySystem = [
+      "12/03/2024, 09:15 - Messages and calls are end-to-end encrypted. No one outside of this chat can read them.",
+      "12/03/2024, 09:16 - You joined using this group's invite link",
+    ].join("\n");
+
+    const validation = validateParsedExport(parseWhatsAppExport(onlySystem));
+    expect(validation.ok).toBe(false);
+    expect(validation.issue?.code).toBe("no_valid_messages");
+  });
+
+  it("counts only storable messages, excluding system rows", () => {
+    const parsed = parseWhatsAppExport(ANDROID_EXPORT);
+    const validation = validateParsedExport(parsed);
+    const systemRows = parsed.messages.filter((message) => message.kind === "system").length;
+
+    expect(validation.ok).toBe(true);
+    expect(validation.messageCount).toBe(parsed.messages.length - systemRows);
+    expect(systemRows).toBeGreaterThan(0);
+  });
+});
+
+describe("ambiguous self labels", () => {
+  it("asks instead of guessing when both sides look like the user", () => {
+    const suggestion = suggestSelfLabels(["You", "Me"]);
+
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.labels).toEqual([]);
+    expect(suggestion.isGroup).toBe(false);
+    expect(suggestion.reason).toMatch(/more than one participant is labelled as you/i);
+  });
+
+  it("still resolves a single sender as unusable", () => {
+    const suggestion = suggestSelfLabels(["Priya"]);
+    expect(suggestion.confident).toBe(false);
+    expect(suggestion.reason).toMatch(/only one participant/i);
+  });
+
+  it("ignores blank participant labels", () => {
+    const suggestion = suggestSelfLabels(["Priya", "  ", "You"]);
+    expect(suggestion.confident).toBe(true);
+    expect(suggestion.labels).toEqual(["You"]);
   });
 });

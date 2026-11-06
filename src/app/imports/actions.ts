@@ -1,57 +1,77 @@
 "use server";
 
 /**
- * Import server action: the full upload -> parse -> store path.
+ * Import server actions.
  *
- * Deliberately conservative:
- *   - the file is hashed first, so an identical export cannot be imported twice,
- *   - the raw file is stored in a private bucket before parsing,
- *   - messages are only written once parsing succeeds,
- *   - if sender attribution is ambiguous the import is parked in `needs_review`
- *     rather than producing messages with guessed directions.
+ * Upload flow (two steps, matching the review requirements):
+ *   1. `uploadImportAction`  — hash, dedupe, upload, validate, parse, park.
+ *   2. `confirmImportAction` — the user confirms participants and contact;
+ *      only then are messages written.
+ *
+ * The checksum is computed from the bytes *before* uploading, and the duplicate
+ * check runs before the upload too, so a repeat upload never writes an object.
+ * If anything after the upload fails, the object is removed.
  */
 
 import { createHash, randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { isAppError, ValidationError } from "@/lib/errors";
-import { MAX_UPLOAD_BYTES, importUploadMetaSchema } from "@/lib/validation/schemas";
+import { isAppError } from "@/lib/errors";
+import {
+  MAX_UPLOAD_BYTES,
+  confirmParticipantsSchema,
+  importUploadMetaSchema,
+} from "@/lib/validation/schemas";
 import { requireSession } from "@/server/auth/session";
 import { getContact } from "@/server/contacts/repository";
-import { ingestWhatsAppExport } from "@/server/imports/ingest";
-import { CHAT_IMPORTS_BUCKET, buildStoragePath } from "@/server/imports/repository";
+import {
+  confirmImportParticipants,
+  discardImport,
+  ingestWhatsAppExport,
+} from "@/server/imports/ingest";
+import {
+  CHAT_IMPORTS_BUCKET,
+  buildStoragePath,
+  getImportByChecksum,
+  removeImportObjectForUser,
+} from "@/server/imports/repository";
 
-export type ImportActionResult = {
+export type UploadActionResult = {
   ok: boolean;
   message: string;
+  /** Set when the import was parked and needs participant confirmation. */
   importId?: string;
-  needsReview?: boolean;
-  stats?: {
-    messages: number;
+  review?: {
     participants: string[];
-    warnings: number;
-    skippedLines: number;
+    suggestedSelfLabels: string[];
+    selfLabelConfident: boolean;
+    reason: string | null;
+    parsedMessages: number;
+    dateOrder: string;
+    contactId: string;
   };
 };
 
-export async function uploadAndParseImportAction(formData: FormData): Promise<ImportActionResult> {
+export async function uploadImportAction(formData: FormData): Promise<UploadActionResult> {
   const file = formData.get("file");
   const contactIdRaw = formData.get("contactId");
-  const contactId =
-    typeof contactIdRaw === "string" && contactIdRaw.trim().length > 0 ? contactIdRaw.trim() : null;
+  const dateOrderRaw = formData.get("dateOrder");
 
   if (!(file instanceof File)) {
-    return { ok: false, message: "Choose the exported .txt file first." };
+    return { ok: false, message: "Choose the .txt export first." };
   }
+
+  const contactId =
+    typeof contactIdRaw === "string" && contactIdRaw.trim().length > 0 ? contactIdRaw.trim() : "";
 
   const meta = importUploadMetaSchema.safeParse({
     filename: file.name,
     byteSize: file.size,
-    contactId: contactId ?? undefined,
+    contactId,
+    dateOrder: typeof dateOrderRaw === "string" ? dateOrderRaw : undefined,
   });
 
   if (!meta.success) {
-    const first = meta.error.issues[0];
-    return { ok: false, message: first?.message ?? "That file cannot be imported." };
+    return { ok: false, message: meta.error.issues[0]?.message ?? "That file cannot be imported." };
   }
 
   if (file.size > MAX_UPLOAD_BYTES) {
@@ -68,18 +88,27 @@ export async function uploadAndParseImportAction(formData: FormData): Promise<Im
 
   const { supabase, userId } = session;
 
-  // Guard against attaching an import to someone else's contact before we upload.
-  if (contactId) {
-    const contact = await getContact(supabase, userId, contactId);
-    if (!contact) return { ok: false, message: "That contact does not exist or is not yours." };
-  }
+  const contact = await getContact(supabase, userId, meta.data.contactId);
+  if (!contact) return { ok: false, message: "That contact does not exist or is not yours." };
 
   const bytes = new Uint8Array(await file.arrayBuffer());
   const checksum = createHash("sha256").update(bytes).digest("hex");
+
+  // --- Duplicate check BEFORE the upload ---------------------------------
+  const duplicate = await getImportByChecksum(supabase, userId, checksum);
+  if (duplicate) {
+    return {
+      ok: false,
+      message:
+        "This exact export has already been imported. Nothing was uploaded or changed. " +
+        "Open the existing import below instead.",
+      importId: duplicate.id,
+    };
+  }
+
   const importId = randomUUID();
   const storagePath = buildStoragePath(userId, importId, file.name);
 
-  // Store the original file first: if parsing fails, the user still has the source.
   const upload = await supabase.storage
     .from(CHAT_IMPORTS_BUCKET)
     .upload(storagePath, bytes, { contentType: "text/plain", upsert: false });
@@ -88,12 +117,12 @@ export async function uploadAndParseImportAction(formData: FormData): Promise<Im
     return { ok: false, message: `Could not store the file: ${upload.error.message}` };
   }
 
-  try {
-    // WhatsApp .txt exports are UTF-8; decode explicitly so the parser never
-    // receives replacement characters it would treat as text.
-    const content = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  // WhatsApp .txt exports are UTF-8; decode explicitly so the parser never sees
+  // replacement characters it would treat as message text.
+  const content = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 
-    const result = await ingestWhatsAppExport({
+  try {
+    const outcome = await ingestWhatsAppExport({
       userId,
       supabase,
       importId,
@@ -101,48 +130,114 @@ export async function uploadAndParseImportAction(formData: FormData): Promise<Im
       content,
       byteSize: file.size,
       checksum,
-      contactId,
+      storagePath,
+      dateOrder: meta.data.dateOrder,
     });
 
-    revalidatePath("/imports");
-    if (contactId) revalidatePath(`/contacts/${contactId}`);
-
-    if (result.review.required) {
-      return {
-        ok: true,
-        importId: result.chatImport.id,
-        needsReview: true,
-        message:
-          result.review.reason ??
-          "This export needs a quick check before Moti AI can attribute the messages.",
-        stats: {
-          messages: result.parse.parsedMessages,
-          participants: result.parse.detectedParticipants,
-          warnings: result.parse.warnings.length,
-          skippedLines: result.parse.skippedLines,
-        },
-      };
+    if (!outcome.ok) {
+      // Rejections clean up their own object; the message explains why.
+      revalidatePath("/imports");
+      return { ok: false, message: outcome.message };
     }
+
+    revalidatePath("/imports");
 
     return {
       ok: true,
-      importId: result.chatImport.id,
-      message: `Imported ${result.parse.parsedMessages.toLocaleString("en-GB")} messages.`,
-      stats: {
-        messages: result.parse.parsedMessages,
-        participants: result.parse.detectedParticipants,
-        warnings: result.parse.warnings.length,
-        skippedLines: result.parse.skippedLines,
+      importId: outcome.chatImport.id,
+      message: outcome.parse.selfLabelConfident
+        ? `Read ${outcome.parse.parsedMessages.toLocaleString("en-GB")} messages. Confirm the participants to store them.`
+        : `Read ${outcome.parse.parsedMessages.toLocaleString("en-GB")} messages. Tell Moti AI which participant is you.`,
+      review: {
+        participants: outcome.parse.detectedParticipants,
+        suggestedSelfLabels: outcome.parse.suggestedSelfLabels,
+        selfLabelConfident: outcome.parse.selfLabelConfident,
+        reason: outcome.parse.reviewReason,
+        parsedMessages: outcome.parse.parsedMessages,
+        dateOrder: outcome.parse.dateOrder,
+        contactId: contact.id,
       },
     };
   } catch (error) {
-    // Leave the stored file in place for inspection; record the failure via the
-    // import row (ingest updates status before rethrowing).
-    if (isAppError(error)) return { ok: false, message: error.userMessage };
-    if (error instanceof ValidationError) return { ok: false, message: error.userMessage };
+    // The import row may or may not exist; make sure the object does not survive
+    // if the row was never created.
+    await removeImportObjectForUser(supabase, userId, storagePath);
+    revalidatePath("/imports");
 
+    if (isAppError(error)) return { ok: false, message: error.userMessage };
     console.error("[moti] import failed", error);
     const reason = error instanceof Error ? error.message : "Unknown error";
     return { ok: false, message: `Import failed: ${reason.slice(0, 300)}` };
+  }
+}
+
+export type ConfirmActionResult = {
+  ok: boolean;
+  message: string;
+  storedMessages?: number;
+  contactId?: string;
+};
+
+export async function confirmImportAction(formData: FormData): Promise<ConfirmActionResult> {
+  const parsed = confirmParticipantsSchema.safeParse({
+    importId: formData.get("importId"),
+    contactId: formData.get("contactId"),
+    selfLabels: formData.getAll("selfLabels").filter((value) => typeof value === "string"),
+    dateOrder: formData.get("dateOrder") ?? undefined,
+  });
+
+  if (!parsed.success) {
+    return { ok: false, message: parsed.error.issues[0]?.message ?? "Check your selection." };
+  }
+
+  try {
+    const { supabase, userId } = await requireSession();
+
+    const result = await confirmImportParticipants({
+      userId,
+      supabase,
+      importId: parsed.data.importId,
+      contactId: parsed.data.contactId,
+      selfLabels: parsed.data.selfLabels,
+      dateOrder: parsed.data.dateOrder,
+    });
+
+    revalidatePath("/imports");
+    revalidatePath("/contacts");
+    revalidatePath(`/contacts/${parsed.data.contactId}`);
+
+    return {
+      ok: true,
+      message: `Stored ${result.storedMessages.toLocaleString("en-GB")} messages with ${result.contactLabel}.`,
+      storedMessages: result.storedMessages,
+      contactId: parsed.data.contactId,
+    };
+  } catch (error) {
+    if (isAppError(error)) return { ok: false, message: error.userMessage };
+    console.error("[moti] confirm import failed", error);
+    return { ok: false, message: "Could not save those messages. Please try again." };
+  }
+}
+
+export async function discardImportAction(formData: FormData): Promise<ConfirmActionResult> {
+  const importId = formData.get("importId");
+  if (typeof importId !== "string" || importId.length === 0) {
+    return { ok: false, message: "Missing import." };
+  }
+
+  try {
+    const { supabase, userId } = await requireSession();
+    const result = await discardImport({ userId, supabase, importId });
+    revalidatePath("/imports");
+    return {
+      ok: true,
+      message: result.objectRemoved
+        ? "Import discarded and the uploaded file was removed."
+        : "Import discarded.",
+    };
+  } catch (error) {
+    if (isAppError(error)) return { ok: false, message: error.userMessage };
+    console.error("[moti] discard import failed", error);
+    return { ok: false, message: "Could not discard that import." };
   }
 }

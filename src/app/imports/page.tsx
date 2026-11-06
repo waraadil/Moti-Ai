@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { ImportForm } from "@/components/imports/import-form";
+import { PendingImport } from "@/components/imports/pending-import";
 import { Badge, Card, EmptyState, formatDateTime, PageHeader } from "@/components/ui/primitives";
 import { isPublicEnvConfigured } from "@/lib/env";
 import { getOptionalSession } from "@/server/auth/session";
@@ -25,11 +26,25 @@ const STATUS_TONES: Record<string, BadgeTone> = {
 
 const STATUS_LABELS: Record<string, string> = {
   uploaded: "Uploaded",
-  parsing: "Parsing",
-  needs_review: "Needs review",
-  completed: "Completed",
+  parsing: "Reading",
+  needs_review: "Awaiting confirmation",
+  completed: "Stored",
   failed: "Failed",
 };
+
+/**
+ * Reads the date order recorded on the import so re-confirming uses the same
+ * setting the user previewed.
+ */
+function readDateOrderFromWarnings(warnings: unknown): "DMY" | "MDY" {
+  if (!Array.isArray(warnings)) return "DMY";
+  for (const entry of warnings) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const message = (entry as { message?: unknown }).message;
+    if (typeof message === "string" && message.startsWith("dateOrder=MDY")) return "MDY";
+  }
+  return "DMY";
+}
 
 export default async function ImportsPage() {
   if (!isPublicEnvConfigured()) redirect("/login");
@@ -58,6 +73,8 @@ export default async function ImportsPage() {
             In WhatsApp, open the chat → menu → <em>More</em> → <em>Export chat</em> →{" "}
             <em>Without media</em>. Upload the <code className="font-mono text-xs">.txt</code> file
             here. Moti AI does not connect to WhatsApp and cannot read your chats any other way.
+            .zip archives are rejected: unzip them and upload the chat file. Nothing is stored until
+            you confirm which participant is you.
           </p>
 
           {contacts.length === 0 ? (
@@ -146,6 +163,26 @@ export default async function ImportsPage() {
                     <p className="text-caution mt-3 rounded-lg border border-[oklch(0.88_0.06_75)] bg-[oklch(0.97_0.03_75)] px-3 py-2 text-xs">
                       {chatImport.error_message}
                     </p>
+                  ) : chatImport.status === "needs_review" ? (
+                    <p className="text-ink-faint mt-3 text-xs">
+                      Messages are not stored yet. Confirm the participants below.
+                    </p>
+                  ) : null}
+
+                  {chatImport.status === "needs_review" && contacts.length > 0 ? (
+                    <PendingImport
+                      importId={chatImport.id}
+                      filename={chatImport.original_filename}
+                      participants={chatImport.detected_participants}
+                      contacts={contacts.map((contact) => ({
+                        id: contact.id,
+                        name: contact.display_name,
+                      }))}
+                      defaultContactId={chatImport.contact_id ?? contacts[0]?.id ?? ""}
+                      dateOrder={readDateOrderFromWarnings(chatImport.parse_warnings)}
+                      parsedMessages={chatImport.parsed_messages}
+                      note={chatImport.error_message}
+                    />
                   ) : null}
                 </Card>
               ))}
