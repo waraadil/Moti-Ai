@@ -35,6 +35,7 @@ describe("migrations", () => {
       "0005_tenant_integrity.sql",
       "0006_row_level_security.sql",
       "0007_storage.sql",
+      "0008_intelligence_engine.sql",
     ]);
   });
 

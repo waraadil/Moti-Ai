@@ -19,6 +19,21 @@ const serverSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+
+  /**
+   * Analysis provider selection.
+   *
+   * `deterministic` (the default) runs the offline rule engine: real analysis,
+   * no network, no cost. `anthropic` sends conversation text to the Claude
+   * Messages API and therefore requires ANTHROPIC_API_KEY.
+   */
+  MOTI_ANALYSIS_PROVIDER: z.enum(["deterministic", "anthropic"]).default("deterministic"),
+
+  /** Model name passed to the provider. Only used when the provider is anthropic. */
+  MOTI_ANALYSIS_MODEL: z.string().min(1).default("claude-sonnet-4-5-20250929"),
+
+  /** Server-side only. Never expose this or prefix it with NEXT_PUBLIC_. */
+  ANTHROPIC_API_KEY: z.string().min(20, "looks too short to be an Anthropic key").optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -43,6 +58,9 @@ export function getServerEnv(): ServerEnv {
   const parsed = serverSchema.safeParse({
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || undefined,
     MOTI_ENABLE_DB_VERIFY: process.env.MOTI_ENABLE_DB_VERIFY,
+    MOTI_ANALYSIS_PROVIDER: process.env.MOTI_ANALYSIS_PROVIDER || undefined,
+    MOTI_ANALYSIS_MODEL: process.env.MOTI_ANALYSIS_MODEL || undefined,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || undefined,
     NODE_ENV: process.env.NODE_ENV,
   });
 
@@ -51,6 +69,14 @@ export function getServerEnv(): ServerEnv {
       "server",
       parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`),
     );
+  }
+
+  // Fail loudly at the call site rather than midway through an analysis run:
+  // selecting the hosted provider without a key can only ever produce failures.
+  if (parsed.data.MOTI_ANALYSIS_PROVIDER === "anthropic" && !parsed.data.ANTHROPIC_API_KEY) {
+    throw new EnvValidationError("server", [
+      "ANTHROPIC_API_KEY: required when MOTI_ANALYSIS_PROVIDER=anthropic",
+    ]);
   }
 
   cached = parsed.data;

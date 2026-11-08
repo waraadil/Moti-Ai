@@ -23,6 +23,11 @@ class TableQuery {
   private deletion = false;
   private returning = false;
   private limitCount: number | null = null;
+  private orders: Array<{ column: string; ascending: boolean }> = [];
+  private nullFilters: Array<[string, "null" | "not-null"]> = [];
+  private ltFilters: Array<[string, unknown]> = [];
+  private inFilters: Array<[string, unknown[]]> = [];
+  private upsertMode: { conflict: string } | null = null;
 
   constructor(
     private readonly table: string,
@@ -54,6 +59,33 @@ class TableQuery {
     return this;
   }
 
+  in(column: string, values: unknown[]) {
+    this.inFilters.push([column, values]);
+    return this;
+  }
+
+  lt(column: string, value: unknown) {
+    this.ltFilters.push([column, value]);
+    return this;
+  }
+
+  is(column: string, value: null) {
+    this.nullFilters.push([column, value === null ? "null" : "not-null"]);
+    return this;
+  }
+
+  order(column: string, options?: { ascending?: boolean }) {
+    this.orders.push({ column, ascending: options?.ascending ?? true });
+    return this;
+  }
+
+  upsert(values: Row | Row[], options?: { onConflict?: string }) {
+    this.insertion = values;
+    this.returning = true;
+    this.upsertMode = { conflict: options?.onConflict ?? "id" };
+    return this;
+  }
+
   limit(count: number) {
     this.limitCount = count;
     return this;
@@ -78,6 +110,35 @@ class TableQuery {
     return this.execute().then(onfulfilled, onrejected);
   }
 
+  /**
+   * Applies every filter the query built. Reads, updates and deletes all go
+   * through here so a filter can never be silently ignored (which previously
+   * let a scoped update touch rows it should not have).
+   */
+  private applyFilters(rows: Row[]): Row[] {
+    let found = rows.filter((row) => matches(row, this.filters));
+
+    for (const [column, mode] of this.nullFilters) {
+      found = found.filter((row) =>
+        mode === "null" ? row[column] === null || row[column] === undefined : row[column] != null,
+      );
+    }
+    for (const [column, values] of this.inFilters) {
+      found = found.filter((row) => values.includes(row[column]));
+    }
+    for (const [column, value] of this.ltFilters) {
+      found = found.filter((row) => {
+        const left = row[column];
+        if (typeof left === "number" && typeof value === "number") return left < value;
+        if (typeof left === "string" && typeof value === "string") {
+          return Date.parse(left) < Date.parse(value);
+        }
+        return false;
+      });
+    }
+    return found;
+  }
+
   private async execute(): Promise<QueryResult<Row[]>> {
     const rows = this.state.tables[this.table] ?? (this.state.tables[this.table] = []);
 
@@ -100,18 +161,38 @@ class TableQuery {
         }
       }
 
+      const stored: Row[] = [];
+
       for (const row of inserted) {
-        rows.push({ created_at: new Date().toISOString(), ...row });
+        if (this.upsertMode) {
+          const keys = this.upsertMode.conflict.split(",").map((key) => key.trim());
+          const existingIndex = rows.findIndex((candidate) =>
+            keys.every((key) => candidate[key] === row[key]),
+          );
+          if (existingIndex >= 0) {
+            rows[existingIndex] = { ...rows[existingIndex], ...row };
+            stored.push(rows[existingIndex] as Row);
+            continue;
+          }
+        }
+        // Postgres applies column defaults; mirror that so callers get the id back.
+        const persisted: Row = {
+          created_at: new Date().toISOString(),
+          ...row,
+          id: row.id ?? nextId(this.table),
+        };
+        rows.push(persisted);
+        stored.push(persisted);
         this.state.insertCount[this.table] = (this.state.insertCount[this.table] ?? 0) + 1;
       }
 
-      return { data: this.returning ? inserted : [], error: null };
+      // `.insert(...).select(...)` returns the persisted rows, including defaults.
+      return { data: this.returning ? stored : [], error: null };
     }
 
     if (this.updateValues) {
       const updated: Row[] = [];
-      for (const row of rows) {
-        if (!matches(row, this.filters)) continue;
+      for (const row of this.applyFilters(rows)) {
         Object.assign(row, this.updateValues);
         updated.push(row);
       }
@@ -119,14 +200,25 @@ class TableQuery {
     }
 
     if (this.deletion) {
-      const kept = rows.filter((row) => !matches(row, this.filters));
+      const doomed = new Set(this.applyFilters(rows));
+      const kept = rows.filter((row) => !doomed.has(row));
       const removed = rows.length - kept.length;
       this.state.tables[this.table] = kept;
       this.state.deleteCount[this.table] = (this.state.deleteCount[this.table] ?? 0) + removed;
       return { data: [], error: null };
     }
 
-    let found = rows.filter((row) => matches(row, this.filters));
+    let found = this.applyFilters(rows);
+
+    for (const { column, ascending } of [...this.orders].reverse()) {
+      found = [...found].sort((a, b) => {
+        const left = a[column] as string | number;
+        const right = b[column] as string | number;
+        if (left === right) return 0;
+        return (left < right ? -1 : 1) * (ascending ? 1 : -1);
+      });
+    }
+
     if (this.limitCount !== null) found = found.slice(0, this.limitCount);
     return { data: found, error: null };
   }
@@ -168,6 +260,14 @@ export type FakeSupabase = {
     };
   };
 };
+
+let idCounter = 0;
+
+/** Mimics `gen_random_uuid()` well enough for assertions and joins. */
+function nextId(table: string): string {
+  idCounter += 1;
+  return `${table}-${String(idCounter).padStart(6, "0")}`;
+}
 
 export function createFakeSupabase(): FakeSupabase {
   const state: FakeState = {

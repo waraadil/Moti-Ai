@@ -18,10 +18,10 @@ because stored messages are immutable.
 
 ## Status of this build
 
-This repository contains the **project foundation**: schema, security model, authenticated
-application shell, the WhatsApp export parser, and the import pipeline that stores parsed
-messages. It is a real, running application — not a mock-up — but it deliberately does not yet
-contain the AI analysis pipeline.
+This repository contains the schema, security model, authenticated application shell, the
+WhatsApp export parser, the import pipeline that stores parsed messages, and the **conversation
+intelligence engine** that analyses those messages. It is a real, running application — not a
+mock-up. See [Analysis engine](#analysis-engine) for exactly what is and is not implemented.
 
 ### Working end to end
 
@@ -40,17 +40,91 @@ contain the AI analysis pipeline.
 | DMY/MDY date format carried from preview through to storage | Working |
 | Dry-run parse preview API (`POST /api/imports/parse`) | Working |
 | Health endpoint reporting real configuration state | Working |
+| Participant resolution from confirmed sender mappings | Working, tested |
+| Communication style analysis, one profile per participant | Working, tested |
+| Conversation understanding (topics, plans, questions, open threads, details) | Working, tested |
+| Evidence-backed memories with speaker, timestamp and evidence status | Working, tested |
+| Versioned analysis runs with supersede-not-overwrite history | Working, tested |
+| Duplicate-memory prevention by fingerprint | Working, tested |
+| Temporal diff between imports (new info, plans, changes) | Working, tested |
+| Reply draft generation with forbidden-phrase rejection | Working, tested |
 
 ### Deliberately not implemented yet
 
-These are marked **Not analysed** in the UI rather than shown with placeholder values:
-
-- Communication profile generation (per-participant style metrics)
-- Relationship context extraction
-- Memory + evidence extraction
-- Reply draft generation
 - `.zip` exports (rejected with an explanation: unzip and upload the `.txt`)
 - Group chat participant mapping (group exports are rejected outright)
+- Sending anything, anywhere: Moti AI has no send path and no WhatsApp automation
+- Editing a memory's statement in place (corrections create a new version and supersede the old)
+- Background/queued analysis: a run happens inside the request that triggers it
+- Reply drafts are generated and validated by the engine, but the contact page does not yet
+  render a draft composer
+
+---
+
+## Analysis engine
+
+The engine lives in `src/lib/intelligence/` (pure, deterministic services),
+`src/lib/ai/` (provider abstraction) and `src/server/analysis/` (orchestration
+and persistence). Services never import UI or database code, so each is tested
+in isolation.
+
+### Providers
+
+| Provider | When | What it does |
+| --- | --- | --- |
+| `deterministic` (default) | No API key configured | Applies real extraction rules to your messages. No network calls, no cost, fully offline. |
+| `anthropic` | `MOTI_ANALYSIS_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` | Sends the transcript to the Claude Messages API and validates the JSON reply against the same schemas. |
+
+Both providers return the same validated shape, and the provider and model are
+recorded on every analysis version. **The hosted provider path has not been
+exercised against the live API in this repository** — no key is present in the
+build environment, so only the deterministic path has run end to end. Enabling
+it requires setting the two variables above; the app refuses to start if the
+hosted provider is selected without a key.
+
+### Guarantees, and how they are enforced
+
+- **Attribution is never guessed.** Every message keeps the `direction` its
+  import recorded. If the same label appears on both sides, or every message is
+  attributed to one person, the run is *refused* with a reason instead of
+  producing a blended profile.
+- **Direct evidence is separated from interpretation.** Citations carry
+  `status: direct | inferred`, and stored evidence rows carry
+  `evidence_status: direct | inferred | user_asserted`. Inferences are labelled as
+  inferences in the UI.
+- **Memories cannot exist without evidence.** A candidate citing no stored
+  message is dropped before it reaches the database.
+- **Speculation is rejected.** Hypotheticals, negations, questions and hearsay
+  are filtered and reported in the run output rather than stored.
+- **Runs are idempotent.** The input hash covers message ids, bodies and the
+  provider/prompt version. Re-running identical input returns the existing
+  version and creates no new rows or memories.
+- **Memories are never overwritten.** `fingerprint = sha256(normalised
+  statement)` with a partial unique index on active rows; a repeat fact is
+  recorded as "already known".
+- **Versions are append-only.** A new run inserts version *n+1* and points the
+  previous row at its successor via `superseded_by`.
+- **Drafts cannot invent commitments.** Model output is rejected if it promises,
+  declares feelings, or commits the user to an action, and any memory id it
+  cites that was not supplied invalidates the draft.
+
+### Configuration
+
+```bash
+MOTI_ANALYSIS_PROVIDER="deterministic"   # or "anthropic"
+MOTI_ANALYSIS_MODEL="claude-sonnet-4-5-20250929"
+ANTHROPIC_API_KEY=""                      # server-side only, never NEXT_PUBLIC_
+```
+
+Enabling `anthropic` sends conversation text to Anthropic. Nothing is sent when
+the provider is `deterministic`.
+
+### Running it
+
+Open a contact that has imported messages and press **Analyse conversation**.
+The result is reported verbatim: completed (with version and memory counts),
+cached (nothing changed), refused (attribution problem), or failed (with the
+error). There is no optimistic success state.
 
 ---
 
@@ -128,14 +202,15 @@ a secret:
 | Module | Contains | Importable from |
 | --- | --- | --- |
 | `src/lib/env/public.ts` | `NEXT_PUBLIC_*` only | Client and server |
-| `src/lib/env/server.ts` | service role key and server flags | Server only |
+| `src/lib/env/server.ts` | service role key, `ANTHROPIC_API_KEY`, provider flags | Server only |
 | `src/lib/env/index.ts` | barrel — re-exports **public only** | Anywhere |
 
 The service-role client lives in `src/lib/supabase/admin.ts` and imports `server-only`, so
 importing it from a Client Component makes `next build` **fail**. This is verified in CI by
 `npm run build`, not just by convention.
 
-`getServerEnv()` also throws if it is ever evaluated in a browser context.
+`getServerEnv()` also throws if it is ever evaluated in a browser context, and refuses to start
+when `MOTI_ANALYSIS_PROVIDER=anthropic` is set without `ANTHROPIC_API_KEY`.
 
 ---
 
@@ -203,14 +278,19 @@ npm run format         # Prettier
 
 ## Tests
 
-`npm run test` runs 106 tests. The schema suite boots a real PostgreSQL engine
-([PGlite](https://github.com/electric-sql/pglite)) in memory, applies every migration, and then
-asserts the guarantees above actually hold: RLS isolation, cross-user reference rejection,
-immutability, cascade behaviour, constraint enforcement and storage policies.
+`npm run test` runs 195 tests across 15 files.
 
-The import suite runs the real pipeline against an in-memory fake of the queries it uses, covering
-rejection of empty/unreadable/group/`.zip` files, duplicate uploads, Storage cleanup, and the
-confirm-then-store flow (including exports where the user appears under their real name).
+| Suite | What it proves |
+| --- | --- |
+| `tests/schema.test.ts` | Every migration applies to a real PostgreSQL engine (PGlite), and RLS isolation, cross-user reference rejection, immutability, cascades, constraints and storage policies genuinely hold. |
+| `tests/parser.test.ts` | The WhatsApp parser handles real export shapes and rejects what it cannot attribute. |
+| `tests/import-pipeline.test.ts` | The import flow: rejection of empty/unreadable/group/`.zip` files, duplicate uploads, Storage cleanup, and confirm-then-store. |
+| `tests/intelligence/*` | The engine: attribution conflicts, contradictory information, insufficient evidence, duplicate memories, updated imports, forbidden reply phrases, and the temporal diff. |
+| `tests/intelligence/pipeline-sql.test.ts` | The **whole pipeline against real PostgreSQL**, through the real schema — proving the constraints, the partial unique fingerprint index and the versioning rules hold outside the fake. |
+
+The fake Supabase client used by the orchestration tests only implements the query surface the code
+actually calls, and it now shares one filter path across reads, updates and deletes so a filter can
+never be silently ignored.
 
 No test relies on invented credentials or a remote service.
 
@@ -231,15 +311,22 @@ src/
       imports/parse/   dry-run parse preview, nothing persisted
   components/          ui primitives, shell, forms (client components only where needed)
   lib/
+    ai/                provider abstraction: Anthropic client + deterministic engine
     conversations/     WhatsApp export parser (pure, well tested)
     env/               public / server / barrel env accessors
     errors/            typed AppError hierarchy + safe serialisation
+    intelligence/      pure analysis services: participants, style, understanding,
+                       memory rules, temporal diff, reply validation, Zod schemas
     supabase/          browser, server, admin clients + generated-style types
     validation/        Zod schemas for every trust boundary
-  server/              data access: auth, contacts, imports, messages, memories
+  server/
+    analysis/          pipeline orchestration, repositories, read helpers
+    contacts/ imports/ messages/ memories/ replies/
+    auth/
   proxy.ts             session refresh + route protection
-supabase/migrations/   schema, RLS, storage policies
-tests/                 parser, env, errors, schema
+supabase/migrations/   schema, RLS, storage policies (0008 = intelligence engine)
+tests/                 parser, env, errors, schema, import pipeline,
+                       intelligence/ (unit + orchestration + real-PostgreSQL)
 ```
 
 **Conventions**
@@ -248,6 +335,8 @@ tests/                 parser, env, errors, schema
 - Server Components by default; `"use client"` only for forms and interactivity.
 - Every server action re-derives the user from the session — never from the request body.
 - Data the product cannot yet produce is rendered as `Not analysed`, never as zeros.
+- Pure analysis never touches the database; the pipeline in `src/server/analysis` is the only module
+  that both calls the services and writes rows.
 
 ---
 
@@ -255,10 +344,9 @@ tests/                 parser, env, errors, schema
 
 1. `.zip` support (extract the inner chat file server-side).
 2. Group conversation participant mapping.
-3. Communication profile analysis over stored messages, versioned via `analysis_versions`.
-4. Memory + evidence extraction with per-memory citations in the UI.
-5. Reply drafting grounded in profile + memories, with accept/edit/discard tracking.
-6. Data export and deletion tooling.
+3. Reply-draft composer on the contact page, with accept/edit/discard tracking.
+4. Queued analysis for large archives (today a run is synchronous).
+5. Data export and deletion tooling.
 
 ## License
 

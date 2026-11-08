@@ -25,7 +25,11 @@ export type MessageKind = "text" | "media" | "missed_call" | "deleted" | "system
 export type ParticipantScope = "self" | "contact";
 
 export type AnalysisKind =
-  "communication_profile" | "relationship_context" | "memory_extraction" | "reply_suggestion";
+  | "communication_profile"
+  | "relationship_context"
+  | "memory_extraction"
+  | "reply_suggestion"
+  | "temporal_diff";
 
 export type AnalysisStatus = "pending" | "running" | "completed" | "failed" | "superseded";
 
@@ -33,6 +37,8 @@ export type MemoryCategory =
   "preference" | "life_event" | "relationship" | "boundary" | "goal" | "routine" | "sensitive";
 
 export type MemoryStatus = "active" | "superseded" | "archived";
+
+export type EvidenceStatus = "direct" | "inferred" | "user_asserted";
 
 export type ReplyDraftStatus = "draft" | "accepted" | "edited" | "discarded";
 
@@ -165,6 +171,8 @@ export type MemoryRow = {
   first_observed_at: string | null;
   last_observed_at: string | null;
   superseded_by: string | null;
+  fingerprint: string | null;
+  updated_by_run_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -177,6 +185,10 @@ export type MemoryEvidenceRow = {
   excerpt: string | null;
   rationale: string | null;
   confidence: number;
+  evidence_status: EvidenceStatus;
+  speaker_label: string | null;
+  said_at: string | null;
+  source_message_id: string | null;
   created_at: string;
 };
 
@@ -198,6 +210,34 @@ export type AnalysisVersionRow = {
   superseded_by: string | null;
   created_at: string;
   completed_at: string | null;
+};
+
+export type AnalysisRunRow = {
+  input_messages: number;
+  id: string;
+  user_id: string;
+  contact_id: string;
+  kind: AnalysisKind;
+  input_hash: string;
+  status: AnalysisStatus;
+  analysis_version_id: string | null;
+  attempts: number;
+  error_message: string | null;
+  duration_ms: number | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+export type ConversationSnapshotRow = {
+  id: string;
+  user_id: string;
+  contact_id: string;
+  analysis_version_id: string | null;
+  cutoff_at: string;
+  message_count: number;
+  data: Json;
+  created_at: string;
 };
 
 export type ReplyDraftRow = {
@@ -240,6 +280,8 @@ export type Database = {
       memory_evidence: TableDefinition<MemoryEvidenceRow>;
       analysis_versions: TableDefinition<AnalysisVersionRow>;
       reply_drafts: TableDefinition<ReplyDraftRow>;
+      analysis_runs: TableDefinition<AnalysisRunRow>;
+      conversation_snapshots: TableDefinition<ConversationSnapshotRow>;
     };
     Views: Record<string, never>;
     Functions: {
@@ -257,6 +299,7 @@ export type Database = {
       memory_category: MemoryCategory;
       memory_status: MemoryStatus;
       reply_draft_status: ReplyDraftStatus;
+      evidence_status: EvidenceStatus;
     };
     CompositeTypes: Record<string, never>;
   };

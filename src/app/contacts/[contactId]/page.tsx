@@ -15,8 +15,9 @@ import { isPublicEnvConfigured } from "@/lib/env";
 import { getOptionalSession } from "@/server/auth/session";
 import { getContact } from "@/server/contacts/repository";
 import { getConversationStats, listMessages } from "@/server/messages/repository";
-import { listMemoriesWithEvidence } from "@/server/memories/repository";
 import { listImports } from "@/server/imports/repository";
+import { AnalyseButton } from "@/components/contacts/analyse-button";
+import { loadContactAnalysisView, loadMemories, previewEvidence } from "@/server/analysis/view";
 
 export const metadata: Metadata = { title: "Contact" };
 
@@ -47,15 +48,19 @@ export default async function ContactDetailPage({
   const contact = await getContact(session.supabase, session.userId, contactId);
   if (!contact) notFound();
 
-  const [stats, memories, recentMessages, imports] = await Promise.all([
+  const [stats, memories, recentMessages, imports, analysis, evidence] = await Promise.all([
     getConversationStats(session.supabase, session.userId, contactId),
-    listMemoriesWithEvidence(session.supabase, session.userId, contactId, { limit: 20 }),
+    loadMemories(session.supabase, session.userId, contactId),
     listMessages(session.supabase, session.userId, contactId, {
       limit: 15,
       offset: 0,
     }),
     listImports(session.supabase, session.userId, { contactId, limit: 5 }),
+    loadContactAnalysisView(session.supabase, session.userId, contactId, contact.display_name),
+    previewEvidence(session.supabase, session.userId, contactId, contact.display_name),
   ]);
+
+  const hasAnalysis = analysis.latestVersion !== null;
 
   return (
     <AppShell userEmail={session.email}>
@@ -92,28 +97,68 @@ export default async function ContactDetailPage({
             <Card as="section">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-ink text-sm font-semibold">Communication profiles</h2>
-                <Badge tone="neutral">Not generated</Badge>
+                {hasAnalysis ? (
+                  <Badge tone="positive">Version {analysis.latestVersion?.version}</Badge>
+                ) : (
+                  <Badge tone="neutral">Not analysed</Badge>
+                )}
               </div>
               <p className="text-ink-soft mt-2 text-sm leading-relaxed">
                 Moti AI builds one profile for you and one for {contact.display_name} from the same
                 conversation, so tone and rhythm can be compared rather than blended.
               </p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
-                  <p className="text-ink-faint text-xs font-medium uppercase">You</p>
-                  <NotAnalysed />
+
+              {hasAnalysis ? (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
+                    <p className="text-ink-faint text-xs font-medium uppercase">You</p>
+                    <p className="text-ink mt-1 text-sm leading-relaxed">
+                      {analysis.selfProfile?.summary || "No summary produced."}
+                    </p>
+                    <p className="text-ink-faint mt-2 text-xs">
+                      {analysis.selfProfile?.messageCount.toLocaleString("en-GB")} messages ·
+                      confidence {Math.round((analysis.selfProfile?.confidence ?? 0) * 100)}% (
+                      {analysis.selfProfile?.level})
+                    </p>
+                  </div>
+                  <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
+                    <p className="text-ink-faint text-xs font-medium uppercase">
+                      {contact.display_name}
+                    </p>
+                    <p className="text-ink mt-1 text-sm leading-relaxed">
+                      {analysis.contactProfile?.summary || "No summary produced."}
+                    </p>
+                    <p className="text-ink-faint mt-2 text-xs">
+                      {analysis.contactProfile?.messageCount.toLocaleString("en-GB")} messages ·
+                      confidence {Math.round((analysis.contactProfile?.confidence ?? 0) * 100)}% (
+                      {analysis.contactProfile?.level})
+                    </p>
+                  </div>
                 </div>
-                <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
-                  <p className="text-ink-faint text-xs font-medium uppercase">
-                    {contact.display_name}
-                  </p>
-                  <NotAnalysed />
+              ) : (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
+                    <p className="text-ink-faint text-xs font-medium uppercase">You</p>
+                    <NotAnalysed label={`${evidence.selfMessages ?? 0} messages available`} />
+                  </div>
+                  <div className="border-border-subtle bg-surface rounded-lg border px-4 py-3">
+                    <p className="text-ink-faint text-xs font-medium uppercase">
+                      {contact.display_name}
+                    </p>
+                    <NotAnalysed label={`${evidence.contactMessages ?? 0} messages available`} />
+                  </div>
                 </div>
+              )}
+
+              <div className="border-border-subtle mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+                <p className="text-ink-faint text-xs">
+                  Engine: {analysis.providerLabel}
+                  {hasAnalysis
+                    ? ` · ${analysis.messageCount.toLocaleString("en-GB")} messages analysed`
+                    : ""}
+                </p>
+                <AnalyseButton contactId={contact.id} disabled={stats.totalMessages === 0} />
               </div>
-              <p className="text-ink-faint mt-3 text-xs">
-                Profiles require an analysis run. This build ships the schema and data access; the
-                analysis pipeline is the next milestone.
-              </p>
             </Card>
 
             {/* Memories */}
@@ -218,11 +263,63 @@ export default async function ContactDetailPage({
             <Card as="section">
               <h2 className="text-ink text-sm font-semibold">Relationship context</h2>
               <p className="text-ink-soft mt-2 text-sm">
-                How you know each other, current dynamics and open threads.
+                Recurring topics, plans and threads taken from the conversation itself.
               </p>
-              <div className="border-border-subtle bg-surface mt-3 rounded-lg border px-4 py-3">
-                <NotAnalysed label="No context recorded yet" />
-              </div>
+
+              {hasAnalysis && analysis.topics.length > 0 ? (
+                <div className="border-border-subtle bg-surface mt-3 rounded-lg border px-4 py-3">
+                  <p className="text-ink-faint text-xs font-medium uppercase">Topics</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {analysis.topics.map((topic) => (
+                      <Badge key={topic.label} tone="neutral">
+                        {topic.label} · {topic.mentions}
+                      </Badge>
+                    ))}
+                  </div>
+
+                  {analysis.plans.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-ink-faint text-xs font-medium uppercase">Plans</p>
+                      <ul className="mt-1.5 space-y-1">
+                        {analysis.plans.slice(0, 5).map((plan) => (
+                          <li
+                            key={`${plan.description}-${plan.status}`}
+                            className="text-ink-soft text-xs"
+                          >
+                            <span className="text-ink">&ldquo;{plan.description}&rdquo;</span> —{" "}
+                            {plan.status} · {plan.evidenceCount} citation
+                            {plan.evidenceCount === 1 ? "" : "s"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {analysis.openThreads.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-ink-faint text-xs font-medium uppercase">Open threads</p>
+                      <ul className="mt-1.5 space-y-1">
+                        {analysis.openThreads.slice(0, 5).map((thread) => (
+                          <li key={thread.topic} className="text-ink-soft text-xs">
+                            <span className="text-ink capitalize">{thread.topic}</span> —{" "}
+                            {thread.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="border-border-subtle bg-surface mt-3 rounded-lg border px-4 py-3">
+                  <NotAnalysed
+                    label={
+                      hasAnalysis
+                        ? "No recurring topics found in this conversation"
+                        : "No context recorded yet"
+                    }
+                  />
+                </div>
+              )}
             </Card>
 
             <Card as="section">
@@ -256,7 +353,9 @@ export default async function ContactDetailPage({
                 sent automatically.
               </p>
               <p className="text-ink-faint mt-3 text-xs">
-                Requires a completed analysis run. Not available in this build.
+                {hasAnalysis
+                  ? "Draft generation uses the profiles and memories above and refuses to invent promises, feelings or commitments. Drafts are saved for review and are never sent from Moti AI."
+                  : "Requires a completed analysis run."}
               </p>
             </Card>
           </div>
