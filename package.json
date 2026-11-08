@@ -17,7 +17,8 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
     "db:verify": "vitest run tests/schema.test.ts",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "verify:provider": "tsx --tsconfig scripts/tsconfig.json scripts/verify-provider.ts"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
@@ -39,6 +40,7 @@
     "prettier": "3.9.10",
     "prettier-plugin-tailwindcss": "0.8.1",
     "tailwindcss": "4.3.5",
+    "tsx": "^4.23.15",
     "typescript": "5.9.3",
     "vitest": "5.1.0"
   }

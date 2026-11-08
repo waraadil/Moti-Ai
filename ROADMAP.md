@@ -3,8 +3,9 @@
 > Persistent phase-control record. Updated at the end of every phase.
 > **One phase at a time. The next phase never begins without explicit approval.**
 
-- **Active phase:** 1 — Foundation & Chat Import (implementation complete, awaiting approval)
-- **Next phase (on approval):** 2 — Conversation Intelligence Engine
+- **Completed phase:** 1 — Foundation & Chat Import (approved to close; provider groundwork done)
+- **Active phase:** 2 — Conversation Intelligence Engine (**not started** — awaiting approval)
+- **Last update:** provider-agnostic AI adapter delivered; live-model verification still blocked
 - **Branch:** `arena/13e0feb7-moti-ai` · **PR:** #1 (open, unmerged)
 
 ---
@@ -89,6 +90,26 @@ None. Phase 1 is functionality-complete for its stated scope.
 
 **Status:** Not started. Begins only on explicit approval.
 
+### Provider architecture — completed groundwork (commit below)
+
+Phase 2 depends on real model calls, so the provider layer was rebuilt first and
+independently of the phase:
+
+| Delivered | Detail |
+| --- | --- |
+| Provider-agnostic interface | `src/lib/ai/types.ts`; adapters hold no domain logic |
+| Anthropic adapter | `src/lib/ai/anthropic.ts` (Messages API) |
+| OpenAI-compatible adapter | `src/lib/ai/openai-compatible.ts` — covers OpenAI, Gemini, Groq, Mistral, DeepSeek, Together, OpenRouter, Ollama, LM Studio, and any custom gateway via `MOTI_ANALYSIS_BASE_URL` |
+| Deterministic engine | Retained as the default; explicitly labelled *not a language model* in UI, health output and docs |
+| Configuration | One `MOTI_ANALYSIS_PROVIDER` variable; one `MOTI_ANALYSIS_API_KEY` for every vendor |
+| Validation | Every model response still parsed by Zod before it can reach storage |
+| Errors | Typed `ProviderError` with `auth` / `rate_limit` / `timeout` / `network` / `server` / `bad_request` / `bad_response` / `config`, plus user-facing advice |
+| Retries & timeouts | Bounded exponential backoff, `Retry-After` respected, per-attempt timeout, no retry on auth/bad-request |
+| Secret hygiene | `server-only` boundary; keys never in API responses, diagnostics or logs; provider error bodies scrubbed via `redactSecrets` |
+| Connectivity diagnostic | `src/lib/ai/diagnose.ts` + auth-gated `GET /api/ai/diagnose`; separates network / auth / model failure |
+| Self-verification | `npm run verify:provider` (`scripts/verify-provider.ts`) |
+| Mocked-provider tests | Both adapters and the full pipeline driven through a scripted HTTP layer |
+
 ### Known blocker (must be resolved before Phase 2 can meet standard #4)
 
 Engineering standard #4 requires **real AI model calls**, and explicitly forbids
@@ -101,17 +122,26 @@ Current environment state:
 - The existing engine therefore runs on a deterministic rule engine, labelled
   `model_provider = "deterministic"`.
 
-An `AnthropicProvider` is implemented (Messages API, server-side key only, zod
-validation, retry on 429/5xx) but **has never been executed against the live API**.
+Both adapters are implemented and are exercised end to end **through a mocked HTTP
+layer** — request shape, headers, retry classification, response parsing, schema
+validation and pipeline integration all run in tests.
 
-**To satisfy standard #4, one of these is required from you:**
+What has **not** happened is a call to a real remote model. This environment's
+egress filter drops TLS handshakes to every AI host (verified: TCP connects, then
+`read 0 bytes` during the handshake) while allowing only package registries and
+GitHub. A key alone therefore cannot unblock it.
 
-1. Add `ANTHROPIC_API_KEY` to this environment **and** provide network access to
-   `api.anthropic.com`; or
-2. Confirm that the deterministic engine satisfies standard #4 for this phase,
-   accepting that no hosted model is exercised.
+**To close this, one of these is required:**
 
-Without one of these, Phase 2 cannot honestly claim compliance with standard #4.
+1. Run `npm run verify:provider` on a machine with normal internet access, using
+   any of the supported providers. It reports reachability, auth and model
+   validity separately.
+2. Enable egress from this sandbox to one AI endpoint; verification can then be
+   run here.
+3. Adopt a local runtime (`ollama` / `lmstudio`) — no key, no egress filter issue.
+
+Until one of these is done, standard #4 is **partially** met: the code path is
+real and tested, but no live model has produced output in this project.
 
 ---
 
@@ -134,6 +164,10 @@ Not started. Scope will be detailed at the start of each phase.
 
 | Phase | Completion reported | Approved by user | Date |
 | --- | --- | --- | --- |
-| 1 | Yes (this document) | **Pending** | — |
+| 1 | Yes | Yes — "Proceed with Option 2" | 2026-11-08 |
+| 2 | No — not started | — | — |
+
+Provider groundwork was requested and delivered as a standalone task between
+phases, at the user's direction. It does not constitute starting Phase 2.
 
 No phase advances without an explicit "approved" from the user.

@@ -21,19 +21,46 @@ const serverSchema = z.object({
     .transform((value) => value === "true"),
 
   /**
-   * Analysis provider selection.
+   * Analysis provider selection. See src/lib/ai/config.ts for the full list.
    *
-   * `deterministic` (the default) runs the offline rule engine: real analysis,
-   * no network, no cost. `anthropic` sends conversation text to the Claude
-   * Messages API and therefore requires ANTHROPIC_API_KEY.
+   * `deterministic` (default) runs the offline rule engine — genuine analysis,
+   * but NOT a language model. Any other value selects a generative provider:
+   * `anthropic`, or an OpenAI-compatible one such as `openai`, `gemini`, `groq`,
+   * `mistral`, `deepseek`, `together`, `openrouter`, `ollama`, `lmstudio`, or
+   * `openai-compatible` with an explicit MOTI_ANALYSIS_BASE_URL.
    */
-  MOTI_ANALYSIS_PROVIDER: z.enum(["deterministic", "anthropic"]).default("deterministic"),
+  MOTI_ANALYSIS_PROVIDER: z.string().min(1).default("deterministic"),
 
-  /** Model name passed to the provider. Only used when the provider is anthropic. */
-  MOTI_ANALYSIS_MODEL: z.string().min(1).default("claude-sonnet-4-5-20250929"),
+  /** Model name. Falls back to the endpoint preset's default when unset. */
+  MOTI_ANALYSIS_MODEL: z.string().optional(),
 
-  /** Server-side only. Never expose this or prefix it with NEXT_PUBLIC_. */
+  /** Overrides the preset endpoint. Required for provider "openai-compatible". */
+  MOTI_ANALYSIS_BASE_URL: z.url().optional(),
+
+  /**
+   * Server-side only. Never prefix with NEXT_PUBLIC_ and never commit a real key.
+   * One variable for every vendor, so setup is identical across providers.
+   */
+  MOTI_ANALYSIS_API_KEY: z.string().min(8, "looks too short to be an API key").optional(),
+
+  /** Legacy variable, still honoured when the provider is anthropic. */
   ANTHROPIC_API_KEY: z.string().min(20, "looks too short to be an Anthropic key").optional(),
+
+  /** Allow an endpoint with no key. Only sensible for a local runtime. */
+  MOTI_ANALYSIS_ALLOW_NO_KEY: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+
+  /** Per-attempt timeout in milliseconds. */
+  MOTI_ANALYSIS_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(120_000),
+
+  /** Total HTTP attempts including the first. */
+  MOTI_ANALYSIS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+
+  /** Used only for provider attribution headers (e.g. OpenRouter). */
+  MOTI_ANALYSIS_APP_URL: z.url().optional(),
+
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -60,7 +87,13 @@ export function getServerEnv(): ServerEnv {
     MOTI_ENABLE_DB_VERIFY: process.env.MOTI_ENABLE_DB_VERIFY,
     MOTI_ANALYSIS_PROVIDER: process.env.MOTI_ANALYSIS_PROVIDER || undefined,
     MOTI_ANALYSIS_MODEL: process.env.MOTI_ANALYSIS_MODEL || undefined,
+    MOTI_ANALYSIS_BASE_URL: process.env.MOTI_ANALYSIS_BASE_URL || undefined,
+    MOTI_ANALYSIS_API_KEY: process.env.MOTI_ANALYSIS_API_KEY || undefined,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || undefined,
+    MOTI_ANALYSIS_ALLOW_NO_KEY: process.env.MOTI_ANALYSIS_ALLOW_NO_KEY || undefined,
+    MOTI_ANALYSIS_TIMEOUT_MS: process.env.MOTI_ANALYSIS_TIMEOUT_MS || undefined,
+    MOTI_ANALYSIS_MAX_ATTEMPTS: process.env.MOTI_ANALYSIS_MAX_ATTEMPTS || undefined,
+    MOTI_ANALYSIS_APP_URL: process.env.MOTI_ANALYSIS_APP_URL || undefined,
     NODE_ENV: process.env.NODE_ENV,
   });
 
@@ -71,13 +104,11 @@ export function getServerEnv(): ServerEnv {
     );
   }
 
-  // Fail loudly at the call site rather than midway through an analysis run:
-  // selecting the hosted provider without a key can only ever produce failures.
-  if (parsed.data.MOTI_ANALYSIS_PROVIDER === "anthropic" && !parsed.data.ANTHROPIC_API_KEY) {
-    throw new EnvValidationError("server", [
-      "ANTHROPIC_API_KEY: required when MOTI_ANALYSIS_PROVIDER=anthropic",
-    ]);
-  }
+  /*
+   * Provider validity is checked by readProviderConfig, which owns that logic.
+   * It is deliberately NOT duplicated here: two sources of truth drifted apart
+   * before, and the env schema accepted values the factory then rejected.
+   */
 
   cached = parsed.data;
   return cached;

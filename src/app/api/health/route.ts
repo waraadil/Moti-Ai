@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 import { isPublicEnvConfigured } from "@/lib/env";
 import { tryCreateServerSupabaseClient } from "@/lib/supabase/server";
+import { providerSummary } from "@/lib/ai";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,11 @@ export async function GET() {
     }
   }
 
-  const healthy = configured && database !== "unreachable";
+  // Reported without a network call: safe, cheap, and enough to tell whether an
+  // AI feature will work. `?probe=ai` runs the full connectivity test instead.
+  const ai = providerSummary();
+
+  const healthy = configured && database !== "unreachable" && ai.configured;
 
   return NextResponse.json(
     {
@@ -44,6 +49,15 @@ export async function GET() {
       checks: {
         supabaseConfigured: configured,
         database,
+        analysisProvider: {
+          configured: ai.configured,
+          provider: ai.provider,
+          model: ai.model,
+          isGenerative: ai.isGenerative,
+          // A boolean only. The key itself is never returned.
+          hasApiKey: ai.hasApiKey,
+          error: ai.error,
+        },
       },
       timestamp: new Date().toISOString(),
     },

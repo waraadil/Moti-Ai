@@ -37,8 +37,7 @@ import {
   type MemoryCandidate,
 } from "@/lib/intelligence/schemas";
 import type { AnalysisMessage, ConversationInput } from "@/lib/intelligence/types";
-import { PROMPT_VERSION, type ModelIdentity } from "@/lib/ai/provider";
-import { createProvider, type ProviderBundle } from "@/lib/ai";
+import { createProvider, PROMPT_VERSION, type ModelIdentity, type ProviderBundle } from "@/lib/ai";
 import {
   beginRun,
   completeRun,
@@ -419,7 +418,7 @@ export async function runAnalysis(params: RunAnalysisParams): Promise<AnalysisOu
 async function resolveIdentity(bundle: ProviderBundle): Promise<ModelIdentity> {
   return bundle.kind === "deterministic"
     ? { provider: "deterministic", model: "moti-rules-v1" }
-    : { provider: "anthropic", model: bundle.provider.identity.model };
+    : { provider: bundle.provider.identity.provider, model: bundle.provider.identity.model };
 }
 
 /**
@@ -508,9 +507,10 @@ async function extractMemoriesWithProvider(
 
 /** Exported for the UI: which provider will be used, without exposing the key. */
 export function analysisProviderLabel(bundle: ProviderBundle): string {
-  return bundle.kind === "deterministic"
-    ? "Moti rule engine (deterministic, offline)"
-    : `Anthropic ${bundle.provider.identity.model}`;
+  if (bundle.kind === "deterministic") {
+    return "Moti rule engine (deterministic, offline — not a language model)";
+  }
+  return `${bundle.provider.identity.provider} · ${bundle.provider.identity.model}`;
 }
 
 /** Unused import guard: keeps the style narration schema referenced. */

@@ -22,7 +22,7 @@ import {
   type ConversationUnderstanding,
 } from "@/lib/intelligence/understanding";
 import type { AnalysisMessage, ConversationInput } from "@/lib/intelligence/types";
-import type { AnalysisProvider, LlmRequest, LlmResponse, ModelIdentity } from "./provider";
+import type { AnalysisProvider, LlmRequest, LlmResponse, ModelIdentity } from "./types";
 
 export type DeterministicTask =
   | { kind: "memories"; input: ConversationInput }
@@ -67,6 +67,8 @@ export class DeterministicProvider implements AnalysisProvider {
       identity: this.identity,
       usage: null,
       durationMs: Date.now() - startedAt,
+      // No HTTP involved: the rule engine runs in-process.
+      attempts: 1,
     };
   }
 }

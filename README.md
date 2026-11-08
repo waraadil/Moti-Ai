@@ -69,17 +69,65 @@ in isolation.
 
 ### Providers
 
-| Provider | When | What it does |
-| --- | --- | --- |
-| `deterministic` (default) | No API key configured | Applies real extraction rules to your messages. No network calls, no cost, fully offline. |
-| `anthropic` | `MOTI_ANALYSIS_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` | Sends the transcript to the Claude Messages API and validates the JSON reply against the same schemas. |
+The provider is chosen with a single variable, `MOTI_ANALYSIS_PROVIDER`.
+Two adapters cover every option:
 
-Both providers return the same validated shape, and the provider and model are
-recorded on every analysis version. **The hosted provider path has not been
-exercised against the live API in this repository** — no key is present in the
-build environment, so only the deterministic path has run end to end. Enabling
-it requires setting the two variables above; the app refuses to start if the
-hosted provider is selected without a key.
+| Adapter | Providers | Key needed |
+| --- | --- | --- |
+| **Anthropic** | `anthropic` | `MOTI_ANALYSIS_API_KEY` |
+| **OpenAI-compatible** | `openai`, `gemini`, `groq`, `mistral`, `deepseek`, `together`, `openrouter`, `openai-compatible` | `MOTI_ANALYSIS_API_KEY` |
+| **OpenAI-compatible (local)** | `ollama`, `lmstudio` | none |
+| **Rule engine** | `deterministic` (default) | none |
+
+Any endpoint that speaks `POST /chat/completions` works, including one not in
+the preset list: set `MOTI_ANALYSIS_BASE_URL` and it wins over the built-in
+default.
+
+> **`deterministic` is not a language model.** It is a genuine rule-based
+> analyser — real extraction over your messages, same validated output shapes —
+> but it cannot reason about nuance. It exists so the app runs, and is testable,
+> without a key or a network. Every analysis records which provider produced it.
+
+### Verifying your AI setup
+
+Set your key, then run:
+
+```bash
+npm run verify:provider
+```
+
+It reports, in order: whether the configuration is valid, whether the endpoint
+is **reachable**, whether the **key** is accepted, and whether the **model name**
+exists. It never prints your key, and it distinguishes a network block from a bad
+key — the two failures people most often confuse.
+
+A passing run means real AI analysis is working. A `FAIL reachability` line means
+your network cannot reach the host: that is not a code or key problem.
+
+### Setup, step by step (works from a phone)
+
+1. **Create `.env.local`** in the project root (next to `package.json`), copying
+   `.env.example`. Any Android text editor works — Acode, Squircle, or the
+   Termux editor if you are running the app there.
+2. **Get a key.** Groq (`console.groq.com/keys`) and Gemini
+   (`aistudio.google.com/app/apikey`) both have free tiers and are the quickest
+   to start with.
+3. **Fill in two lines:**
+   ```bash
+   MOTI_ANALYSIS_PROVIDER="groq"
+   MOTI_ANALYSIS_API_KEY="your-key-here"
+   ```
+   Leave the Supabase values as they are until you set up a project.
+4. **Verify:** `npm run verify:provider`
+5. **Run the app:** `npm run dev`, open it, import a chat, press *Analyse*.
+
+If verification fails with `FAIL reachability`, check the network before the key.
+Some mobile carriers and most corporate VPNs block AI endpoints.
+
+**Security:** keys are read only in server code (`src/lib/ai` is `server-only`,
+so `next build` fails if a Client Component ever imports it). Keys are never
+returned by the API, never included in a diagnostic report, and provider error
+bodies are scrubbed of anything key-shaped before being logged or stored.
 
 ### Guarantees, and how they are enforced
 

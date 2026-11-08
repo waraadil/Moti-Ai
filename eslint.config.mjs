@@ -22,6 +22,15 @@ const config = [
       ],
     },
   },
+  // Must come last: in flat config the final matching entry wins.
+  {
+    // CLI scripts write to the terminal by design; the browser-app rule does not
+    // apply to them.
+    files: ["scripts/**/*.ts"],
+    rules: {
+      "no-console": "off",
+    },
+  },
 ];
 
 export default config;

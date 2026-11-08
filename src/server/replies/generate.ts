@@ -13,8 +13,7 @@
 
 import "server-only";
 
-import { PROMPT_VERSION, type ModelIdentity } from "@/lib/ai/provider";
-import { createProvider, type ProviderBundle } from "@/lib/ai";
+import { createProvider, PROMPT_VERSION, type ModelIdentity, type ProviderBundle } from "@/lib/ai";
 import { analyseConversationStyle, type StyleMetrics } from "@/lib/intelligence/style";
 import { understandConversation } from "@/lib/intelligence/understanding";
 import {
@@ -148,7 +147,7 @@ export async function generateReplyDrafts(
   const identity: ModelIdentity =
     bundle.kind === "deterministic"
       ? { provider: "deterministic", model: "moti-rules-v1" }
-      : { provider: "anthropic", model: bundle.provider.identity.model };
+      : { provider: bundle.provider.identity.provider, model: bundle.provider.identity.model };
 
   let raw: string;
   try {
