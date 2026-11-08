@@ -149,3 +149,32 @@ export const messageQuerySchema = paginationSchema.extend({
 });
 
 export type MessageQuery = z.infer<typeof messageQuerySchema>;
+
+/**
+ * A memory the user types or corrects by hand.
+ *
+ * The statement is required and bounded; category is restricted to the enum the
+ * database accepts, so an invalid value fails here rather than at the insert.
+ */
+export const memoryCorrectionSchema = z.object({
+  category: z.enum([
+    "preference",
+    "life_event",
+    "relationship",
+    "boundary",
+    "goal",
+    "routine",
+    "sensitive",
+  ]),
+  statement: z
+    .string()
+    .trim()
+    .min(3, "Describe the fact in a few words.")
+    .max(500, "Keep this under 500 characters."),
+  details: z.string().trim().max(2000).optional(),
+});
+
+export type MemoryCorrectionInput = z.infer<typeof memoryCorrectionSchema>;
+
+/** Tone hint for a reply draft; free text, bounded. */
+export const replyToneSchema = z.string().trim().max(40).optional();

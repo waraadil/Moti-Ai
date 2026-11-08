@@ -22,6 +22,19 @@ export type MemoryWithEvidence = MemoryRow & {
   evidence: MemoryEvidenceRow[];
 };
 
+/** Shared implementation: the repository must agree with the pipeline exactly. */
+import { memoryFingerprint } from "@/lib/intelligence/fingerprint";
+
+export const fingerprintStatement = memoryFingerprint;
+
+/** Raised when a memory write would collide with an existing active fact. */
+export class DuplicateMemoryError extends Error {
+  constructor(public readonly existingMemoryId: string) {
+    super("An active memory already states this. Correct or archive that one instead.");
+    this.name = "DuplicateMemoryError";
+  }
+}
+
 export async function listMemories(
   supabase: ServerSupabaseClient,
   userId: string,
@@ -107,13 +120,15 @@ export async function createMemory(
       topics: input.topics ?? [],
       confidence: input.confidence ?? 0,
       is_sensitive: input.isSensitive ?? false,
+      fingerprint: fingerprintStatement(input.statement),
       // A memory the user typed in themselves is, by definition, confirmed.
       is_user_confirmed: true,
     })
     .select("*")
     .single();
 
-  if (error) throw error;
+  if (error)
+    throw await translateFingerprintClash(supabase, userId, contactId, input.statement, error);
   return data;
 }
 
@@ -159,6 +174,7 @@ export async function supersedeMemory(
       topics: input.topics ?? original.topics,
       confidence: original.confidence,
       is_sensitive: input.isSensitive ?? original.is_sensitive,
+      fingerprint: fingerprintStatement(input.statement),
       is_user_confirmed: true,
       first_observed_at: original.first_observed_at,
       last_observed_at: original.last_observed_at,
@@ -166,7 +182,15 @@ export async function supersedeMemory(
     .select("*")
     .single();
 
-  if (insertError) throw insertError;
+  if (insertError) {
+    throw await translateFingerprintClash(
+      supabase,
+      userId,
+      original.contact_id,
+      input.statement,
+      insertError,
+    );
+  }
 
   const { error: updateError } = await supabase
     .from("memories")
@@ -200,4 +224,32 @@ export async function archiveMemory(
 
   if (error) throw error;
   if (!data) throw new NotFoundError("That memory does not exist, is not yours, or is not active.");
+}
+
+/**
+ * Turns a unique-violation on `memories_active_fingerprint_key` into a message a
+ * person can act on, and returns every other error untouched.
+ */
+async function translateFingerprintClash(
+  supabase: ServerSupabaseClient,
+  userId: string,
+  contactId: string,
+  statement: string,
+  error: { code?: string; message?: string },
+): Promise<unknown> {
+  const isUniqueViolation =
+    error.code === "23505" || (error.message ?? "").toLowerCase().includes("duplicate key");
+
+  if (!isUniqueViolation) return error;
+
+  const { data } = await supabase
+    .from("memories")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("contact_id", contactId)
+    .eq("status", "active")
+    .eq("fingerprint", fingerprintStatement(statement))
+    .maybeSingle();
+
+  return new DuplicateMemoryError(data?.id ?? "");
 }

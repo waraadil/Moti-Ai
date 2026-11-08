@@ -48,16 +48,15 @@ mock-up. See [Analysis engine](#analysis-engine) for exactly what is and is not 
 | Duplicate-memory prevention by fingerprint | Working, tested |
 | Temporal diff between imports (new info, plans, changes) | Working, tested |
 | Reply draft generation with forbidden-phrase rejection | Working, tested |
+| Reply drafts persisted and reviewed (accept / edit / discard) | Working, tested |
+| Memory correction and archival from the contact page | Working, tested |
 
 ### Deliberately not implemented yet
 
 - `.zip` exports (rejected with an explanation: unzip and upload the `.txt`)
 - Group chat participant mapping (group exports are rejected outright)
 - Sending anything, anywhere: Moti AI has no send path and no WhatsApp automation
-- Editing a memory's statement in place (corrections create a new version and supersede the old)
 - Background/queued analysis: a run happens inside the request that triggers it
-- Reply drafts are generated and validated by the engine, but the contact page does not yet
-  render a draft composer
 
 ---
 
@@ -340,13 +339,29 @@ tests/                 parser, env, errors, schema, import pipeline,
 
 ---
 
+### Reviewing memory and reply changes
+
+Memory corrections never edit a row in place. "Correct" inserts the corrected
+fact and marks the original `status = 'superseded'` with a pointer to its
+replacement; "archive" sets `status = 'archived'` and keeps the evidence. The
+original wording and its citations are therefore always recoverable, which is why
+there is no destructive delete path.
+
+Draft review follows the same principle. Regenerating discards the previous
+*open* drafts (they are marked `discarded`, not deleted) and never touches drafts
+already accepted or edited. Accepting records `accepted_at`; editing stores the
+user's text in `edited_body` alongside Moti's original in `body`, so the
+difference between what was suggested and what the human actually sent stays
+visible. **No button in this UI sends a message** — accepted text is copied into
+WhatsApp by the user.
+
 ## Roadmap
 
 1. `.zip` support (extract the inner chat file server-side).
 2. Group conversation participant mapping.
-3. Reply-draft composer on the contact page, with accept/edit/discard tracking.
-4. Queued analysis for large archives (today a run is synchronous).
-5. Data export and deletion tooling.
+3. Queued analysis for large archives (today a run is synchronous).
+4. Data export and deletion tooling.
+5. Exercising the hosted provider path against the live Anthropic API.
 
 ## License
 

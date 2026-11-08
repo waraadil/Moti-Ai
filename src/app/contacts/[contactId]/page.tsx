@@ -16,23 +16,16 @@ import { getOptionalSession } from "@/server/auth/session";
 import { getContact } from "@/server/contacts/repository";
 import { getConversationStats, listMessages } from "@/server/messages/repository";
 import { listImports } from "@/server/imports/repository";
+import { listDrafts } from "@/server/replies/repository";
 import { AnalyseButton } from "@/components/contacts/analyse-button";
+import { MemoryItem } from "@/components/contacts/memory-item";
+import { ReplyDrafts } from "@/components/contacts/reply-drafts";
 import { loadContactAnalysisView, loadMemories, previewEvidence } from "@/server/analysis/view";
 
 export const metadata: Metadata = { title: "Contact" };
 
 // Always rendered per request: this page depends on the current session.
 export const dynamic = "force-dynamic";
-
-const CATEGORY_LABELS: Record<string, string> = {
-  preference: "Preference",
-  life_event: "Life event",
-  relationship: "Relationship",
-  boundary: "Boundary",
-  goal: "Goal",
-  routine: "Routine",
-  sensitive: "Sensitive",
-};
 
 export default async function ContactDetailPage({
   params,
@@ -59,6 +52,10 @@ export default async function ContactDetailPage({
     loadContactAnalysisView(session.supabase, session.userId, contactId, contact.display_name),
     previewEvidence(session.supabase, session.userId, contactId, contact.display_name),
   ]);
+
+  const drafts = await listDrafts(session.supabase, session.userId, contactId, {
+    limit: 10,
+  });
 
   const hasAnalysis = analysis.latestVersion !== null;
 
@@ -177,45 +174,52 @@ export default async function ContactDetailPage({
                   />
                 </div>
               ) : (
-                <ul className="mt-4 space-y-3">
-                  {memories.map((memory) => (
-                    <li
-                      key={memory.id}
-                      className="border-border-subtle bg-surface rounded-lg border px-4 py-3"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge tone="accent">
-                          {CATEGORY_LABELS[memory.category] ?? memory.category}
-                        </Badge>
-                        {memory.is_user_confirmed ? (
-                          <Badge tone="positive">You confirmed</Badge>
-                        ) : null}
-                        {memory.is_sensitive ? <Badge tone="caution">Sensitive</Badge> : null}
-                        <span className="text-ink-faint text-xs">
-                          confidence {(memory.confidence * 100).toFixed(0)}%
-                        </span>
-                      </div>
-                      <p className="text-ink mt-2 text-sm">{memory.statement}</p>
-                      {memory.evidence.length > 0 ? (
-                        <details className="mt-2">
-                          <summary className="text-accent-ink cursor-pointer text-xs font-medium">
-                            {memory.evidence.length} supporting excerpt
-                            {memory.evidence.length === 1 ? "" : "s"}
-                          </summary>
-                          <ul className="border-border-subtle mt-2 space-y-1.5 border-l-2 pl-3">
-                            {memory.evidence.map((item) => (
-                              <li key={item.id} className="text-ink-soft text-xs">
-                                {item.excerpt ?? "(message excerpt unavailable)"}
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      ) : (
-                        <p className="text-ink-faint mt-2 text-xs">No evidence attached yet.</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <ul className="mt-4 space-y-3">
+                    {memories.map((memory) => (
+                      <MemoryItem
+                        key={memory.id}
+                        contactId={contact.id}
+                        memory={{
+                          id: memory.id,
+                          category: memory.category,
+                          statement: memory.statement,
+                          details: memory.details,
+                          confidence: memory.confidence,
+                          isSensitive: memory.is_sensitive,
+                          isUserConfirmed: memory.is_user_confirmed,
+                          evidenceCount: memory.evidence.length,
+                        }}
+                      />
+                    ))}
+                  </ul>
+
+                  {/*
+                  Evidence stays visible but is rendered per-memory below the
+                  statement, so correcting a memory never hides its sources.
+                */}
+                  <details className="mt-3">
+                    <summary className="text-ink-soft cursor-pointer text-xs font-medium">
+                      Show supporting excerpts
+                    </summary>
+                    <ul className="mt-2 space-y-2">
+                      {memories
+                        .filter((memory) => memory.evidence.length > 0)
+                        .map((memory) => (
+                          <li key={`evidence-${memory.id}`} className="text-ink-soft text-xs">
+                            <p className="text-ink">{memory.statement}</p>
+                            <ul className="border-border-subtle mt-1 space-y-1 border-l-2 pl-3">
+                              {memory.evidence.map((item) => (
+                                <li key={item.id}>
+                                  {item.excerpt ?? "(message excerpt unavailable)"}
+                                </li>
+                              ))}
+                            </ul>
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
+                </>
               )}
             </Card>
 
@@ -349,14 +353,31 @@ export default async function ContactDetailPage({
             <Card as="section">
               <h2 className="text-ink text-sm font-semibold">Reply suggestions</h2>
               <p className="text-ink-soft mt-2 text-sm">
-                Draft replies are generated from the profile and memories above. Nothing is ever
-                sent automatically.
+                Drafts use your style with {contact.display_name}, their style, the shared context
+                and the memories above. Moti AI never sends anything — you copy the text across
+                yourself.
               </p>
-              <p className="text-ink-faint mt-3 text-xs">
-                {hasAnalysis
-                  ? "Draft generation uses the profiles and memories above and refuses to invent promises, feelings or commitments. Drafts are saved for review and are never sent from Moti AI."
-                  : "Requires a completed analysis run."}
-              </p>
+
+              <div className="mt-3">
+                <ReplyDrafts
+                  contactId={contact.id}
+                  hasAnalysis={hasAnalysis}
+                  drafts={drafts.map((draft) => ({
+                    id: draft.id,
+                    body: draft.body,
+                    editedBody: draft.edited_body,
+                    tone: draft.tone,
+                    status: draft.status,
+                    usedMemoryCount: draft.used_memory_ids.length,
+                    modelProvider: draft.model_provider,
+                    modelName: draft.model_name,
+                  }))}
+                />
+              </div>
+
+              {!hasAnalysis ? (
+                <p className="text-ink-faint mt-3 text-xs">Requires a completed analysis run.</p>
+              ) : null}
             </Card>
           </div>
         </div>

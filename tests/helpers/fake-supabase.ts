@@ -23,6 +23,7 @@ class TableQuery {
   private deletion = false;
   private returning = false;
   private limitCount: number | null = null;
+  private rangeSpec: { from: number; to: number } | null = null;
   private orders: Array<{ column: string; ascending: boolean }> = [];
   private nullFilters: Array<[string, "null" | "not-null"]> = [];
   private ltFilters: Array<[string, unknown]> = [];
@@ -88,6 +89,12 @@ class TableQuery {
 
   limit(count: number) {
     this.limitCount = count;
+    return this;
+  }
+
+  /** PostgREST `range(from, to)` — inclusive of both bounds. */
+  range(from: number, to: number) {
+    this.rangeSpec = { from, to };
     return this;
   }
 
@@ -177,6 +184,7 @@ class TableQuery {
         }
         // Postgres applies column defaults; mirror that so callers get the id back.
         const persisted: Row = {
+          ...COLUMN_DEFAULTS[this.table],
           created_at: new Date().toISOString(),
           ...row,
           id: row.id ?? nextId(this.table),
@@ -219,6 +227,9 @@ class TableQuery {
       });
     }
 
+    if (this.rangeSpec) {
+      found = found.slice(this.rangeSpec.from, this.rangeSpec.to + 1);
+    }
     if (this.limitCount !== null) found = found.slice(0, this.limitCount);
     return { data: found, error: null };
   }
@@ -259,6 +270,19 @@ export type FakeSupabase = {
       ) => Promise<{ data: { signedUrl: string }; error: null }>;
     };
   };
+};
+
+/**
+ * Column defaults that live in the migrations.
+ *
+ * The fake must apply these, otherwise a repository that (correctly) relies on
+ * the database default reads back `undefined` in tests and the bug only appears
+ * against real Postgres.
+ */
+const COLUMN_DEFAULTS: Record<string, Record<string, unknown>> = {
+  memories: { status: "active", is_user_confirmed: false, is_sensitive: false },
+  reply_drafts: { status: "draft", used_memory_ids: [] },
+  analysis_runs: { status: "pending", attempts: 0, input_messages: 0 },
 };
 
 let idCounter = 0;

@@ -18,7 +18,6 @@
 
 import "server-only";
 
-import { createHash } from "node:crypto";
 import type { MessageRow } from "@/lib/supabase/database.types";
 import type { ServerSupabaseClient } from "@/lib/supabase/server";
 import { analyseConversationStyle, describeStyle } from "@/lib/intelligence/style";
@@ -114,15 +113,13 @@ export function toAnalysisInput(
   };
 }
 
-/** Normalises a statement so wording variants share a fingerprint. */
-export function memoryFingerprint(statement: string): string {
-  const normalised = statement
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return createHash("sha256").update(normalised).digest("hex");
-}
+/**
+ * Re-exported so callers keep their existing import path while the single
+ * implementation lives in the pure intelligence layer.
+ */
+import { memoryFingerprint } from "@/lib/intelligence/fingerprint";
+
+export { memoryFingerprint };
 
 export type RunAnalysisParams = {
   userId: string;
