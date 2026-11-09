@@ -55,6 +55,20 @@ const serverSchema = z.object({
   /** Per-attempt timeout in milliseconds. */
   MOTI_ANALYSIS_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(120_000),
 
+  /*
+   * WhatsApp Business Cloud API — the only official way to send programmatically.
+   *
+   * Present so readiness can be reported honestly. Setting these does NOT make
+   * the app able to send: there is no outbound path and no webhook handler in
+   * this build, so a configured token is reported as "configured but unused"
+   * rather than as a working integration.
+   */
+  WHATSAPP_ACCESS_TOKEN: z.string().min(10).optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().min(3).optional(),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().min(3).optional(),
+  WHATSAPP_VERIFY_TOKEN: z.string().min(8).optional(),
+  WHATSAPP_APP_SECRET: z.string().min(10).optional(),
+
   /** Total HTTP attempts including the first. */
   MOTI_ANALYSIS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
 
@@ -85,6 +99,11 @@ export function getServerEnv(): ServerEnv {
   const parsed = serverSchema.safeParse({
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || undefined,
     MOTI_ENABLE_DB_VERIFY: process.env.MOTI_ENABLE_DB_VERIFY,
+    WHATSAPP_ACCESS_TOKEN: process.env.WHATSAPP_ACCESS_TOKEN || undefined,
+    WHATSAPP_PHONE_NUMBER_ID: process.env.WHATSAPP_PHONE_NUMBER_ID || undefined,
+    WHATSAPP_BUSINESS_ACCOUNT_ID: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || undefined,
+    WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || undefined,
+    WHATSAPP_APP_SECRET: process.env.WHATSAPP_APP_SECRET || undefined,
     MOTI_ANALYSIS_PROVIDER: process.env.MOTI_ANALYSIS_PROVIDER || undefined,
     MOTI_ANALYSIS_MODEL: process.env.MOTI_ANALYSIS_MODEL || undefined,
     MOTI_ANALYSIS_BASE_URL: process.env.MOTI_ANALYSIS_BASE_URL || undefined,

@@ -50,12 +50,23 @@ mock-up. See [Analysis engine](#analysis-engine) for exactly what is and is not 
 | Reply draft generation with forbidden-phrase rejection | Working, tested |
 | Reply drafts persisted and reviewed (accept / edit / discard) | Working, tested |
 | Memory correction and archival from the contact page | Working, tested |
+| Reply learning from accepted, edited and discarded drafts | Working, tested |
+| Automatic re-analysis when a new export is imported | Working, tested |
+| Temporal changes persisted and shown ("Since last analysis") | Working, tested |
+| Away Mode: windows, per-contact rules, approval gates | Working, tested |
+| Append-only Away Mode activity history | Working, tested |
+| Integration readiness page stating what is and is not connected | Working, tested |
 
 ### Deliberately not implemented yet
 
 - `.zip` exports (rejected with an explanation: unzip and upload the `.txt`)
 - Group chat participant mapping (group exports are rejected outright)
 - Sending anything, anywhere: Moti AI has no send path and no WhatsApp automation
+- Live WhatsApp connection: no webhook handler, no Meta app registration. `/integrations`
+  reports exactly what is missing, and configuring credentials does **not** turn it
+  green — the code to send does not exist
+- Unofficial WhatsApp clients (QR pairing, reverse-engineered protocols): refused on
+  principle, because they breach WhatsApp's terms and risk a ban on the user's number
 - Background/queued analysis: a run happens inside the request that triggers it
 
 ---

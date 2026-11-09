@@ -41,6 +41,13 @@ const NAV_ITEMS: NavItem[] = [
       "M10 2.5a7.5 7.5 0 100 15 7.5 7.5 0 000-15zm0 3a4.5 4.5 0 100 9 4.5 4.5 0 000-9z",
   },
   {
+    href: "/integrations",
+    label: "Integrations",
+    description: "What Moti can connect to",
+    iconPath:
+      "M7 3v4a4 4 0 004 4h6m0 0l-3-3m3 3l-3 3M3 13h4a4 4 0 004-4V3",
+  },
+  {
     href: "/settings",
     label: "Settings",
     description: "Account and data controls",
