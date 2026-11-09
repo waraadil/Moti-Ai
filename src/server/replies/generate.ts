@@ -30,6 +30,8 @@ import type { MessageRow } from "@/lib/supabase/database.types";
 import type { ServerSupabaseClient } from "@/lib/supabase/server";
 import { toAnalysisInput } from "@/server/analysis/pipeline";
 import { latestVersion } from "@/server/analysis/repository";
+import { isEmptyFeedback, loadReplyFeedback } from "./preferences";
+import type { ReplyFeedback } from "@/lib/intelligence/reply";
 import { listMemories } from "@/server/memories/repository";
 import { listMessages } from "@/server/messages/repository";
 import { replaceOpenDrafts, type NewReplyDraft } from "@/server/replies/repository";
@@ -54,6 +56,11 @@ export type GenerateDraftsParams = {
   tone?: string | null;
   provider?: ProviderBundle;
 };
+
+/** Whitespace- and case-insensitive form, used only for duplicate detection. */
+function normaliseForComparison(body: string): string {
+  return body.replace(/\s+/g, " ").trim().toLowerCase();
+}
 
 /** Loads only the tail of the conversation: reply drafting needs recency, not history. */
 async function loadRecentMessages(
@@ -131,7 +138,7 @@ export async function generateReplyDrafts(
     isUserConfirmed: memory.is_user_confirmed,
   }));
 
-  const context: ReplyContext = {
+  let context: ReplyContext = {
     contactName: params.contactName,
     selfName: params.selfName,
     latestIncoming,
@@ -142,6 +149,20 @@ export async function generateReplyDrafts(
     memories: selectUsableMemories(memories),
     tone: params.tone ?? null,
   };
+
+  /*
+   * Load what the user did with earlier suggestions. A failure here must not
+   * break drafting: preferences improve quality, they are not correctness.
+   */
+  let feedback: ReplyFeedback | undefined;
+  try {
+    feedback = await loadReplyFeedback(supabase, userId, contactId);
+    if (isEmptyFeedback(feedback)) feedback = undefined;
+  } catch (error) {
+    console.error("[moti] could not load reply feedback", error);
+  }
+
+  if (feedback) context = { ...context, feedback };
 
   const bundle = params.provider ?? createProvider();
   const identity: ModelIdentity =
@@ -215,6 +236,22 @@ export async function generateReplyDrafts(
 
   // Safety gate: forbidden phrases and ungrounded citations are dropped here.
   const plan = validateReplyOutput(schemaResult.data, context);
+
+  /*
+   * Drop drafts the user already discarded for this contact. Re-offering a
+   * reply someone explicitly threw away is the clearest sign Moti is ignoring
+   * them; it is cheaper and more honest to stay quiet than to repeat it.
+   * Comparison is normalised (whitespace and case) so a trivial difference
+   * cannot smuggle the same text back in.
+   */
+  const rejectedBodies = new Set(
+    (feedback?.rejected ?? []).map((rejected) => normaliseForComparison(rejected.body)),
+  );
+  if (rejectedBodies.size > 0) {
+    plan.drafts = plan.drafts.filter(
+      (draft) => !rejectedBodies.has(normaliseForComparison(draft.body)),
+    );
+  }
 
   if (plan.drafts.length === 0) {
     return {

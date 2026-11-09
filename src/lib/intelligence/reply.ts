@@ -34,6 +34,8 @@ export type ReplyContext = {
   openThreads: string[];
   memories: ReplyMemory[];
   tone: string | null;
+  /** Evidence of what the user accepted before; empty on a first run. */
+  feedback?: ReplyFeedback;
 };
 
 export type AcceptedDraft = {
@@ -46,6 +48,21 @@ export type AcceptedDraft = {
 export type RejectedDraft = {
   body: string;
   reason: string;
+};
+
+/**
+ * What the user did with earlier suggestions for the same contact.
+ *
+ * Rejected and edited drafts are the most useful signal: an edit shows exactly
+ * which words the user did not want to send.
+ */
+export type ReplyFeedback = {
+  /** Sent unchanged. Shape and tone to lean towards. */
+  accepted: Array<{ body: string; tone: string | null }>;
+  /** Changed before sending. `original` is what to avoid, `edited` what to prefer. */
+  edited: Array<{ original: string; edited: string }>;
+  /** Thrown away without sending. Never repeat these. */
+  rejected: Array<{ body: string }>;
 };
 
 export type ReplyPlan = {
@@ -91,6 +108,45 @@ export function buildReplySystemPrompt(): string {
 }
 
 /** Serialises the context into the user turn. */
+/**
+ * Turns past accept/edit/reject behaviour into prompt guidance.
+ *
+ * Omitting the block entirely on a first run matters: an empty "LEARNED
+ * PREFERENCES" heading would imply Moti has learned something when it has not.
+ */
+function feedbackLines(feedback: ReplyFeedback | undefined): string[] {
+  if (!feedback) return [];
+
+  const lines: string[] = [];
+
+  if (feedback.edited.length > 0) {
+    lines.push("HOW THE USER REWROTE PREVIOUS DRAFTS (learn from the difference):");
+    for (const edit of feedback.edited) {
+      lines.push(`- SUGGESTED: ${edit.original}`);
+      lines.push(`  SENT AS: ${edit.edited}`);
+    }
+    lines.push("");
+  }
+
+  if (feedback.accepted.length > 0) {
+    lines.push("DRAFTS THE USER SENT UNCHANGED (match this shape):");
+    for (const accepted of feedback.accepted) {
+      lines.push(`- ${accepted.body}${accepted.tone ? ` (tone: ${accepted.tone})` : ""}`);
+    }
+    lines.push("");
+  }
+
+  if (feedback.rejected.length > 0) {
+    lines.push("DRAFTS THE USER DISCARDED (do not repeat anything like these):");
+    for (const rejected of feedback.rejected) {
+      lines.push(`- ${rejected.body}`);
+    }
+    lines.push("");
+  }
+
+  return lines;
+}
+
 export function buildReplyUserPrompt(context: ReplyContext): string {
   const format = (message: AnalysisMessage) =>
     `[${message.sentAt}] ${message.participant === "self" ? "USER" : "CONTACT"}: ${message.body}`;
@@ -129,6 +185,7 @@ export function buildReplyUserPrompt(context: ReplyContext): string {
     "",
     context.tone ? `REQUESTED TONE: ${context.tone}` : "REQUESTED TONE: match the user's style",
     "",
+    ...feedbackLines(context.feedback),
     "Produce at most 3 drafts.",
   ];
 
