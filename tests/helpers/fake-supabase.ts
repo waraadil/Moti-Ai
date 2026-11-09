@@ -266,6 +266,7 @@ export type FakeState = {
   failNextUpload?: string;
   /** When set, downloads for these paths fail. */
   failDownloadPaths: Set<string>;
+  failRemovals: boolean;
 };
 
 export type FakeSupabase = {
@@ -333,6 +334,7 @@ export function createFakeSupabase(): FakeSupabase {
     insertCount: {},
     deleteCount: {},
     failDownloadPaths: new Set(),
+    failRemovals: false,
   };
 
   return {
@@ -351,6 +353,11 @@ export function createFakeSupabase(): FakeSupabase {
           return { error: null };
         },
         async remove(paths) {
+          // Lets a test prove that a failed file removal does not proceed to
+          // delete database rows, which would strand an unreachable copy.
+          if (state.failRemovals) {
+            return { error: { message: "storage unavailable" } };
+          }
           for (const path of paths) {
             state.objects.delete(path);
             state.removals.push(path);

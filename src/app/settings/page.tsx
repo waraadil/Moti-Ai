@@ -5,6 +5,8 @@ import { Badge, Card, formatDateTime, PageHeader, Stat } from "@/components/ui/p
 import { isPublicEnvConfigured } from "@/lib/env";
 import { isServiceRoleConfigured } from "@/lib/supabase/admin";
 import { getOptionalSession } from "@/server/auth/session";
+import { listContacts } from "@/server/contacts/repository";
+import { DeleteContactForm, DeleteEverythingForm } from "@/components/settings/data-controls";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -19,6 +21,8 @@ export default async function SettingsPage() {
 
   // Report what is genuinely configured, from the server, without exposing keys.
   const adminConfigured = isServiceRoleConfigured();
+
+  const contacts = await listContacts(session.supabase, session.userId);
 
   return (
     <AppShell userEmail={session.email}>
@@ -98,9 +102,53 @@ export default async function SettingsPage() {
             <Stat label="Auto-send" value="Never" hint="Drafts only" />
           </dl>
           <p className="text-ink-faint mt-4 text-xs leading-relaxed">
-            Archived contacts and superseded memories are retained rather than deleted, so past
-            analysis stays auditable. Data deletion tooling is not part of this build yet.
+            Archived contacts and superseded memories are retained rather than deleted while the
+            account is in use, so past analysis stays auditable. You can remove any of it at any
+            time below.
           </p>
+        </Card>
+
+        <Card as="section">
+          <h2 className="text-ink text-sm font-semibold">Download your data</h2>
+          <p className="text-ink-soft mt-2 text-sm">
+            A single JSON file containing every contact, message, import record, memory, analysis
+            version, reply draft and Away Mode entry you own. It contains no passwords and no data
+            belonging to anyone else.
+          </p>
+          <a
+            href="/api/export"
+            className="border-border-strong text-ink-soft hover:bg-surface-sunken mt-3 inline-block rounded-lg border px-3 py-2 text-sm font-medium"
+          >
+            Download my data (JSON)
+          </a>
+        </Card>
+
+        <Card as="section">
+          <h2 className="text-ink text-sm font-semibold">Delete a conversation</h2>
+          <p className="text-ink-soft mt-1 text-sm">
+            Removes one contact, its messages, the stored export files, its analysis and any
+            prepared replies. Permanent.
+          </p>
+          {contacts.length === 0 ? (
+            <p className="text-ink-faint mt-3 text-sm">You have no contacts to delete.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {contacts.map((contact) => (
+                <DeleteContactForm
+                  key={contact.id}
+                  contactId={contact.id}
+                  contactName={contact.display_name}
+                />
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card as="section" className="border-danger/40">
+          <h2 className="text-ink text-sm font-semibold">Delete all my data</h2>
+          <div className="mt-2">
+            <DeleteEverythingForm />
+          </div>
         </Card>
       </div>
     </AppShell>
