@@ -4,16 +4,37 @@ import { useActionState } from "react";
 import {
   deleteContactDataAction,
   deleteEverythingAction,
+  retryCleanupAction,
   type DataActionResult,
 } from "@/app/settings/data-actions";
 
-const INITIAL: DataActionResult = { ok: true, message: "" };
+const INITIAL: DataActionResult = { ok: true, complete: true, message: "" };
 
+/**
+ * Result line for a deletion.
+ *
+ * Three states, not two. "Partly done" is the important one: records gone but
+ * files outstanding. Collapsing it into success or failure would misreport both.
+ */
 function Feedback({ state }: { state: DataActionResult }) {
   if (!state.message) return null;
+
+  const tone = !state.ok ? "danger" : state.complete ? "soft" : "caution";
+  const role = state.ok ? "status" : "alert";
+
   return (
-    <div role={state.ok ? "status" : "alert"} className="mt-2">
-      <p className={`text-xs ${state.ok ? "text-ink-soft" : "text-danger"}`}>{state.message}</p>
+    <div role={role} className="mt-2">
+      <p
+        className={`text-xs ${
+          tone === "danger"
+            ? "text-danger"
+            : tone === "caution"
+              ? "text-caution"
+              : "text-ink-soft"
+        }`}
+      >
+        {state.message}
+      </p>
       {state.detail ? <p className="text-ink-faint mt-1 text-xs">{state.detail}</p> : null}
     </div>
   );
@@ -94,5 +115,65 @@ export function DeleteEverythingForm() {
       </div>
       <Feedback state={state} />
     </form>
+  );
+}
+
+/**
+ * Visible, retryable handle on outstanding file cleanup.
+ *
+ * This exists because a deletion can commit its rows while a stored file
+ * survives. Leaving that invisible would mean telling the user everything is
+ * gone when it is not, so the count and the retry button are always shown.
+ */
+export function PendingCleanup({
+  pending,
+}: {
+  pending: Array<{ path: string; attempts: number; lastError: string | null }>;
+}) {
+  const [state, action, isPending] = useActionState(
+    async (_previous: DataActionResult, _formData: FormData) => retryCleanupAction(),
+    INITIAL,
+  );
+
+  if (pending.length === 0 && !state.message) return null;
+
+  return (
+    <div className="border-caution/40 bg-caution/5 mt-3 rounded-lg border p-3">
+      <p className="text-ink text-sm font-medium">
+        {pending.length > 0
+          ? `${pending.length} stored file(s) still need removing`
+          : "File cleanup finished"}
+      </p>
+
+      {pending.length > 0 ? (
+        <>
+          <p className="text-ink-soft mt-1 text-xs">
+            Your records are deleted. These files are queued for removal and will be retried until
+            they succeed. The deletion is not reported complete until they are gone.
+          </p>
+          <ul className="text-ink-faint mt-2 space-y-1 text-xs">
+            {pending.map((item) => (
+              <li key={item.path} className="truncate">
+                {item.path}
+                {item.attempts > 0 ? ` · ${item.attempts} attempt(s)` : ""}
+                {item.lastError ? ` · ${item.lastError}` : ""}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      <form action={action} className="mt-2">
+        <button
+          type="submit"
+          disabled={isPending}
+          className="border-border-strong text-ink-soft hover:bg-surface-sunken rounded-lg border px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+        >
+          {isPending ? "Retrying…" : "Retry file cleanup"}
+        </button>
+      </form>
+
+      <Feedback state={state} />
+    </div>
   );
 }

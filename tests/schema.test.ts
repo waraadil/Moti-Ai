@@ -38,6 +38,7 @@ describe("migrations", () => {
       "0008_intelligence_engine.sql",
     "0009_temporal_diff.sql",
     "0010_away_mode.sql",
+    "0011_reliable_deletion.sql",
     ]);
   });
 
@@ -68,6 +69,7 @@ describe("migrations", () => {
         "away_contact_permissions",
         "away_prepared_replies",
         "away_events",
+        "data_cleanup_jobs",
       ]),
     );
   });

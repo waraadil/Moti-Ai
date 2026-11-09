@@ -5,7 +5,8 @@
 
 - **Completed phases:** 1, 2, 3, 4, 5, 6 — all six delivered in one run at the user's explicit direction ("complete the phases, make it ready as soon as possible")
 - **Active phase:** none. Awaiting the user's review and approval.
-- **Last update:** 2026-11-06 — Phases 3–6 built, tested and pushed
+- **Last update:** 2026-11-06 — post-review hardening (transactional deletion, profile
+  anonymisation, failure-injection tests, cloud verification workflow)
 - **Branch:** `arena/13e0feb7-moti-ai` · **PR:** #1 (open, **unmerged** — merging requires approval)
 
 ---
@@ -21,6 +22,21 @@
 | 4 | Away Mode & Controlled AI Assistance | **Complete** | `1689c9e` |
 | 5 | WhatsApp & Platform Integration | **Complete** (capability model only — see below) | `f6facbe` |
 | 6 | Finalisation, Security & Deployment | **Complete** (export + deletion + docs) | see PR |
+
+### Status vocabulary used in this file
+
+These words are used precisely; do not read one as another.
+
+| Term | Means | Does **not** mean |
+| --- | --- | --- |
+| **Implemented** | Code exists, is wired into the app, and is covered by tests that pass on this commit | Verified against a live third-party service |
+| **Verified** | A real external service responded correctly, with evidence recorded here | Merely that the code compiles |
+| **Blocked** | An external dependency prevents verification, through no code fault | That something is broken or unfinished in code |
+| **Not implemented** | The capability does not exist, by design or by omission (stated which) | A hidden gap |
+
+Every row in the phase tables below is **implemented**. Only the rows marked
+*Verified* additionally have external evidence. Nothing is marked *Verified*
+without a recorded result.
 
 ### What "complete" means here, precisely
 
@@ -291,8 +307,10 @@ on the one decision that must never happen by accident.
 | Requirement | Status | Evidence |
 | --- | --- | --- |
 | Account/data export | Done | `GET /api/export`, authenticated, `no-store` |
-| Data deletion (single conversation) | Done | Confirmation phrase checked server-side; refuses if the stored file cannot be removed |
-| Data deletion (everything) | Done | Explicit table list, so a new table is a visible omission rather than a silent leak |
+| Data deletion (single conversation) | Done — transactional | One database function, so it is all-or-nothing (migration `0011`) |
+| Data deletion (everything) | Done — transactional | Same, plus profile anonymisation |
+| Retryable storage cleanup | Done | `data_cleanup_jobs` queue; failures are recorded, not hidden |
+| Deletion cannot report false completion | Done | `complete` is decided after storage draining, and tested |
 | RLS verified by test | Done | 22 schema tests including four new Away Mode isolation tests |
 | No secrets in the client bundle | Verified | `grep` over `.next/static` finds no key names |
 | Accessibility | Partly | Labels, `role="alert"`/`status` on feedback, semantic lists. Not audited with a screen reader |
@@ -301,35 +319,86 @@ on the one decision that must never happen by accident.
 | Theme (dark mode) | **Not done** | Committed theme only; a dark mode was never requested and is not implemented |
 | Android/mobile | Working by design | Responsive shell; verified by build and markup, not on a device |
 
-### Deletion scope, stated precisely
+### Deletion: what changed after review
 
-Deletion removes the user's rows and their stored export files. It does **not**
-delete the Supabase Auth account: that is a separate action with a different
-blast radius, and pretending otherwise would leave someone believing their login
-was gone when it is not. The UI says this.
+The first version deleted table by table from the application. Review found a
+real defect: if the fifth statement failed, the first four were already committed
+and the user was told "nothing was changed" — which was false. It also refused
+optionally to delete anything when a file could not be removed, which sounds safe
+but left the user unable to retry.
 
-If a stored file cannot be removed, **nothing is deleted**. Leaving the rows means
-the user can retry; deleting them would strand an unreachable copy in storage that
-they can no longer see or account for.
+The design is now:
+
+1. **All row deletion happens inside one database function** (`delete_contact_data`
+   / `delete_all_user_data`). PostgREST cannot run a multi-statement transaction
+   from the client, so this had to move into the database. Either every row goes
+   or none does. Verified against real PostgreSQL by injecting a failure that
+   raises mid-function and asserting every row survived.
+2. **Identity comes from `auth.uid()`, not a parameter.** A caller cannot ask the
+   database to delete another account's data even if the application layer were
+   wrong. This is stricter than the previous client-side filtering.
+3. **Storage is queued, not deleted inline.** Objects cannot join a database
+   transaction. Paths are captured *before* their rows are removed, then removed
+   afterwards from `data_cleanup_jobs`. A failed removal keeps its queue row,
+   increments an attempt counter, and stays visible.
+4. **Completion is honest.** `complete` is computed *after* draining the queue, so
+   a committed row deletion with an outstanding file reports `complete: false`
+   and names the file. The earlier draft computed it from a flag taken before any
+   storage work — caught by a test, not by inspection.
+5. **Retry is a first-class action.** "Retry file cleanup" in Settings re-attempts
+   only the queued removals. Repeated deletion is safe: a second `deleteEverything`
+   removes nothing and honestly reports complete.
+
+### Profile data: exactly what remains
+
+`delete_all_user_data(true)` **anonymises** the profile row rather than deleting it:
+
+| Field | After deletion |
+| --- | --- |
+| `email` | set to `NULL` |
+| `display_name` | replaced with `"Deleted account"` |
+| `timezone` | reset to `UTC` |
+| `id` | **remains** — a bare UUID |
+
+The row cannot be dropped while the account exists: `profiles.id` is a foreign key
+to `auth.users` and the cascade runs the other way. What physically survives is an
+identifier with no name, no email and no timezone attached to it.
+
+The Supabase Auth account itself is **not** deleted. That is a separate action
+with a different blast radius, it lives in a schema Supabase owns, and deleting it
+from an application migration is unsupported. The UI states this plainly rather
+than leaving the user to assume their login is gone.
 
 ---
 
 ## Test and build results at close of Phase 6
 
 ```
-vitest        405 passed / 405 (29 files)
-db:verify      22 passed / 22  (migrations 0001-0010 apply cleanly)
+vitest        434 passed / 434 (31 files)
+db:verify      22 passed / 22  (migrations 0001-0011 apply cleanly)
 tsc --noEmit   clean
 eslint         0 errors, 0 warnings
 next build     clean; /away, /integrations, /api/export registered
 ```
 
+### Implemented vs externally verified
+
+| Capability | Implemented | Externally verified |
+| --- | --- | --- |
+| Chat import, analysis, memories, drafts | Yes | Yes — everything except the model call runs locally in tests |
+| Deterministic analysis engine | Yes | Yes — exercises real code paths in tests |
+| Generative AI providers (Anthropic, OpenAI-compatible) | Yes | **No** — every test uses a mocked HTTP transport. No real model has ever answered |
+| Away Mode, approval gates, activity log | Yes | Yes — verified against real PostgreSQL via PGlite |
+| Transactional deletion + cleanup queue | Yes | Yes — rollback proven against real PostgreSQL |
+| Data export | Yes | Yes — row scoping proven by test |
+| WhatsApp official connection | **No** — capability model only | No, and none claimed |
+
 ### Known blockers, collected as instructed
 
 | # | Blocker | Impact | Owner |
 | --- | --- | --- | --- |
-| 1 | Egress from the dev sandbox is SNI-filtered for every AI host | No live model call has been verified here | Environment — not code. Prove it with `npm run verify:provider` on a machine with normal internet |
-| 2 | No AI API key exists in this environment | Standard #4 remains unmet | User supplies a key when ready |
+| 1 | Egress from the dev sandbox is SNI-filtered for every AI host | No live model call has been verified here | Environment — not code. **Resolved path:** run the `Verify AI provider` GitHub Actions workflow, which needs no computer and no terminal |
+| 2 | No AI API key exists in this environment | Standard #4 remains unmet | **User action, no computer needed:** add `MOTI_ANALYSIS_API_KEY` as a GitHub Actions secret, then run the workflow. The key never enters chat or the repo |
 | 3 | No Meta/WhatsApp credentials, and no webhook handler exists | No live platform connection | Deliberate: Phase 5 added the capability model, not a connection |
 | 4 | Dark mode not implemented | Cosmetic | Not requested; would need a design decision |
 | 5 | Performance never measured | Unknown behaviour on very large exports | Future work |
@@ -337,6 +406,22 @@ next build     clean; /away, /integrations, /api/export registered
 None of these are hidden failures. The app is functional without resolving any of
 them; items 1 and 2 are about *verifying* the AI provider, not about the app
 working.
+
+**Items 1 and 2 now have a route that needs no computer:** `.github/workflows/verify-provider.yml`
+runs the same self-verification script on a GitHub runner, with the key held in an
+encrypted Actions secret. See README → "Verifying from a phone". The blocker
+stays open until someone actually runs it and records the result here.
+
+### Outstanding after this review
+
+| Item | Status |
+| --- | --- |
+| Deletion atomicity, retry and honest reporting | Fixed and proven against real PostgreSQL |
+| Profile anonymisation | Implemented; what remains is documented above |
+| Failure-injection tests | 29 new tests across fake and real database |
+| Cloud verification workflow | Added, not yet executed — needs the user's key |
+| Dark mode | Still not implemented (never requested) |
+| Performance profiling | Still not measured |
 
 ---
 
@@ -350,7 +435,12 @@ working.
 | 3 | Yes | — | 2026-11-06 |
 | 4 | Yes | — | 2026-11-06 |
 | 5 | Yes (capability model only) | — | 2026-11-06 |
-| 6 | Yes | — | 2026-11-09 |
+| 6 | Yes | — | 2026-11-06 |
+
+Dates above are the user's local date (UTC+05:30). The development sandbox clock
+runs ahead of it, so commit timestamps in `git log` may read a day later than the
+dates recorded here; the recorded dates are the authoritative ones for this
+project's schedule.
 
 **Phases 2–6 were built in a single run** at the user's explicit direction:
 *"Complete the phases make it ready as soon as possible."* That instruction

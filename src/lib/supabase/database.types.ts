@@ -302,6 +302,20 @@ export type AwayEventRow = {
   created_at: string;
 };
 
+export type DataCleanupKind = "chat_import_object";
+
+export type DataCleanupJobRow = {
+  id: string;
+  user_id: string;
+  kind: DataCleanupKind;
+  bucket: string;
+  object_path: string;
+  attempts: number;
+  last_error: string | null;
+  last_attempt_at: string | null;
+  created_at: string;
+};
+
 export type ReplyDraftRow = {
   id: string;
   user_id: string;
@@ -349,10 +363,22 @@ export type Database = {
       away_prepared_replies: TableDefinition<AwayPreparedReplyRow>;
       // Append-only: the log is never updated or deleted, so `Update` is never.
       away_events: TableDefinition<AwayEventRow, Partial<AwayEventRow>, never>;
+      data_cleanup_jobs: TableDefinition<DataCleanupJobRow>;
     };
     Views: Record<string, never>;
     Functions: {
       current_user_id: { Args: Record<string, never>; Returns: string };
+      /**
+       * Deletion RPCs (migration 0011). Each runs in one transaction and derives
+       * the user from auth.uid(), so no user id is passed.
+       */
+      delete_contact_data: { Args: { p_contact_id: string }; Returns: Json };
+      delete_all_user_data: { Args: { p_anonymise?: boolean }; Returns: Json };
+      anonymise_profile: { Args: { p_user_id: string }; Returns: undefined };
+      record_cleanup_failure: {
+        Args: { p_job_id: string; p_error: string };
+        Returns: undefined;
+      };
     };
     Enums: {
       relationship_kind: RelationshipKind;
@@ -371,6 +397,7 @@ export type Database = {
       away_permission: AwayPermission;
       away_approval_state: AwayApprovalState;
       away_event_kind: AwayEventKind;
+      data_cleanup_kind: DataCleanupKind;
     };
     CompositeTypes: Record<string, never>;
   };

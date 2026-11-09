@@ -10,6 +10,9 @@
 
 type Row = Record<string, unknown>;
 
+/** Mirrors the Json type from database.types; the fake avoids importing src. */
+type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
 type QueryResult<T> = { data: T; error: null | { message: string; code?: string } };
 
 function matches(row: Row, filters: Array<[string, unknown]>): boolean {
@@ -255,6 +258,7 @@ class TableQuery {
 }
 
 export type FakeState = {
+  // Reassignable: the fake RPC snapshots and restores this to emulate rollback.
   tables: Record<string, Row[]>;
   objects: Map<string, Uint8Array>;
   uploads: string[];
@@ -267,11 +271,22 @@ export type FakeState = {
   /** When set, downloads for these paths fail. */
   failDownloadPaths: Set<string>;
   failRemovals: boolean;
+  /**
+   * Makes the fake `rpc` fail part-way through a deletion, after some tables
+   * have been touched. Used to prove the whole operation rolls back rather than
+   * leaving a half-deleted account.
+   */
+  failRpcAtTable: string | null;
+  /** Forces `rpc` to fail before any work, as a connection failure would. */
+  failRpcEntirely: boolean;
+  /** Stands in for auth.uid(); the deletion RPCs read identity from here. */
+  currentUserId: string | null;
 };
 
 export type FakeSupabase = {
   state: FakeState;
   from: (table: string) => TableQuery;
+  rpc: (name: string, args?: Record<string, unknown>) => Promise<{ data: Json | null; error: { message: string } | null }>;
   storage: {
     from: (bucket: string) => {
       upload: (
@@ -335,10 +350,197 @@ export function createFakeSupabase(): FakeSupabase {
     deleteCount: {},
     failDownloadPaths: new Set(),
     failRemovals: false,
+    failRpcAtTable: null,
+    failRpcEntirely: false,
+    currentUserId: null,
   };
 
   return {
     state,
+
+    /**
+     * Emulates the deletion RPCs from migration 0011.
+     *
+     * These are the parts of the real behaviour that matter for correctness:
+     *
+     *   - the whole thing runs on a snapshot and is committed only at the end,
+     *     so a failure anywhere leaves the database exactly as it was;
+     *   - the user comes from `state.currentUserId` (standing in for auth.uid()),
+     *     never from an argument;
+     *   - storage paths are queued as jobs rather than deleted here.
+     *
+     * Other RPCs are rejected loudly rather than silently returning nothing,
+     * because a test that passes against a no-op is worse than a failing one.
+     */
+    async rpc(name: string, args: Record<string, unknown> = {}) {
+      if (state.failRpcEntirely) {
+        return { data: null, error: { message: "connection reset" } };
+      }
+
+      if (name === "record_cleanup_failure") {
+        const jobId = String(args.p_job_id ?? "");
+        const rows = state.tables.data_cleanup_jobs ?? [];
+        const job = rows.find((row) => row.id === jobId);
+        if (!job) return { data: null, error: { message: "job not found" } };
+        job.attempts = Number(job.attempts ?? 0) + 1;
+        job.last_error = String(args.p_error ?? "");
+        job.last_attempt_at = new Date().toISOString();
+        return { data: null, error: null };
+      }
+
+      if (name !== "delete_contact_data" && name !== "delete_all_user_data") {
+        return { data: null, error: { message: `fake-supabase: rpc "${name}" not implemented` } };
+      }
+
+      const userId = state.currentUserId;
+      if (!userId) {
+        return { data: null, error: { message: "delete: not authenticated" } };
+      }
+
+      const scoped = name === "delete_contact_data";
+      const contactId = scoped ? String(args.p_contact_id ?? "") : null;
+      const anonymise = name === "delete_all_user_data" && args.p_anonymise !== false;
+
+      // Take a snapshot so a mid-way failure can be rolled back.
+      const snapshot = structuredClone(state.tables);
+
+      const rollback = () => {
+        state.tables = snapshot;
+      };
+
+      if (scoped) {
+        const owned = (state.tables.contacts ?? []).some(
+          (row) => row.id === contactId && row.user_id === userId,
+        );
+        if (!owned) {
+          return { data: null, error: { message: "contact not found or not yours" } };
+        }
+      }
+
+      // Queue storage objects while their rows still exist.
+      state.tables.data_cleanup_jobs = state.tables.data_cleanup_jobs ?? [];
+      let queued = 0;
+      for (const row of state.tables.chat_imports ?? []) {
+        if (row.user_id !== userId) continue;
+        if (scoped && row.contact_id !== contactId) continue;
+        if (!row.storage_path) continue;
+        const exists = state.tables.data_cleanup_jobs.some(
+          (job) => job.object_path === row.storage_path,
+        );
+        if (exists) continue;
+        state.tables.data_cleanup_jobs.push({
+          id: nextId("data_cleanup_jobs"),
+          user_id: userId,
+          kind: "chat_import_object",
+          bucket: "chat-imports",
+          object_path: row.storage_path,
+          attempts: 0,
+          last_error: null,
+          last_attempt_at: null,
+          created_at: new Date().toISOString(),
+        });
+        queued += 1;
+      }
+
+      const deleted: Record<string, number> = {};
+
+      const purge = (table: string): boolean => {
+        if (state.failRpcAtTable === table) return false;
+        const rows = state.tables[table] ?? [];
+
+        /*
+         * memory_evidence has no contact_id: it is scoped through its parent
+         * memory. The fake mirrors that, so a test cannot pass on a shape the
+         * real database does not have.
+         */
+        if (table === "memory_evidence") {
+          const memoryIds = new Set(
+            (state.tables.memories ?? [])
+              .filter((row) => row.user_id === userId && (!scoped || row.contact_id === contactId))
+              .map((row) => row.id),
+          );
+          const keptEvidence = rows.filter(
+            (row) => row.user_id !== userId || !memoryIds.has(row.memory_id),
+          );
+          const removedEvidence = rows.length - keptEvidence.length;
+          state.tables[table] = keptEvidence;
+          if (removedEvidence > 0) deleted[table] = removedEvidence;
+          return true;
+        }
+        const kept = rows.filter((row) => {
+          if (row.user_id !== userId) return true;
+          if (scoped && row.contact_id !== contactId) return true;
+          return false;
+        });
+        const removed = rows.length - kept.length;
+        state.tables[table] = kept;
+        if (removed > 0) deleted[table] = removed;
+        return true;
+      };
+
+      const order = [
+        "away_prepared_replies",
+        "away_events",
+        "away_contact_permissions",
+        "away_settings",
+        "reply_drafts",
+        "conversation_snapshots",
+        "analysis_runs",
+        "analysis_versions",
+        "memory_evidence",
+        "memories",
+        "relationship_contexts",
+        "communication_profiles",
+        "contact_aliases",
+        "messages",
+        "chat_imports",
+      ];
+
+      for (const table of order) {
+        if (!purge(table)) {
+          rollback();
+          return { data: null, error: { message: `simulated failure deleting from ${table}` } };
+        }
+      }
+
+      // Contacts are keyed by id, not contact_id.
+      if (state.failRpcAtTable === "contacts") {
+        rollback();
+        return { data: null, error: { message: "simulated failure deleting contacts" } };
+      }
+      {
+        const rows = state.tables.contacts ?? [];
+        const kept = rows.filter(
+          (row) =>
+            row.user_id !== userId || (scoped && row.id !== contactId),
+        );
+        const removed = rows.length - kept.length;
+        state.tables.contacts = kept;
+        if (removed > 0) deleted.contacts = removed;
+      }
+
+      if (anonymise) {
+        const profile = (state.tables.profiles ?? []).find((row) => row.id === userId);
+        if (profile) {
+          profile.email = null;
+          profile.display_name = "Deleted account";
+          profile.timezone = "UTC";
+          deleted.profile_anonymised = 1;
+        }
+      }
+
+      const pending = state.tables.data_cleanup_jobs.filter((job) => job.user_id === userId);
+
+      return {
+        data: {
+          deleted,
+          purge_contact: contactId,
+          queued_files: queued,
+          complete: pending.length === 0,
+        },
+        error: null,
+      };
+    },
     from: (table: string) => new TableQuery(table, state),
     storage: {
       from: () => ({

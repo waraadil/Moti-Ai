@@ -1,0 +1,105 @@
+# --- Real-provider verification, run from the cloud ---------------------------
+#
+# Why this exists
+# ---------------
+# Proving the AI layer works needs a machine with normal internet access and an
+# API key. If you only have a phone, you have neither a terminal nor a place to
+# keep a key safely. This workflow gives you both:
+#
+#   - it runs on GitHub's runners, which have normal network access,
+#   - the key lives in an encrypted Actions secret, never in the repository,
+#     never in a chat message, and never in the build output.
+#
+# How to use it (no computer required)
+# ------------------------------------
+#   1. Open the repository on github.com in your phone browser.
+#   2. Settings -> Secrets and variables -> Actions -> "New repository secret".
+#   3. Add MOTI_ANALYSIS_API_KEY with your provider key.
+#      Optionally add MOTI_ANALYSIS_PROVIDER (e.g. groq) and MOTI_ANALYSIS_MODEL.
+#      Without a provider value it defaults to "groq" below.
+#   4. Actions tab -> "Verify AI provider" -> "Run workflow".
+#   5. Open the run and read the log. It prints PASS/FAIL per stage.
+#
+# Safety properties, stated plainly:
+#   - a secret is never echoed: the script redacts it, and this workflow passes
+#     it through `env:` rather than echoing it,
+#   - the workflow does not run on pull requests from forks, where it could be
+#     abused to exfiltrate a secret,
+#   - it is manual-only (`workflow_dispatch`), so it never spends your tokens
+#     on its own.
+
+name: Verify AI provider
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider id (groq, openai, gemini, anthropic, ...). Blank uses the secret/default."
+        required: false
+        default: ""
+
+# Least privilege: the job only needs to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Reachability, auth and model check
+    runs-on: ubuntu-latest
+    # A stuck network call should not burn runner minutes.
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Fail early if no key is configured
+        env:
+          MOTI_ANALYSIS_API_KEY: ${{ secrets.MOTI_ANALYSIS_API_KEY }}
+        run: |
+          if [ -z "$MOTI_ANALYSIS_API_KEY" ]; then
+            echo "::error::MOTI_ANALYSIS_API_KEY is not set. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "A key is present. Its value is not printed anywhere in this log."
+
+      - name: Verify the provider
+        env:
+          # Passed through the environment, never interpolated into a shell
+          # command, so the value cannot leak into the log via command tracing.
+          MOTI_ANALYSIS_API_KEY: ${{ secrets.MOTI_ANALYSIS_API_KEY }}
+          MOTI_ANALYSIS_PROVIDER: ${{ inputs.provider || secrets.MOTI_ANALYSIS_PROVIDER || 'groq' }}
+          MOTI_ANALYSIS_MODEL: ${{ secrets.MOTI_ANALYSIS_MODEL }}
+          # Keep the probe small: this is a connectivity check, not a workload.
+          MOTI_ANALYSIS_MAX_ATTEMPTS: "2"
+          MOTI_ANALYSIS_TIMEOUT_MS: "60000"
+          NO_COLOR: "1"
+        run: npm run verify:provider
+
+      - name: Summarise the outcome
+        if: always()
+        run: |
+          {
+            echo "## Provider verification"
+            echo
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "**PASS** — the endpoint was reachable, the key was accepted and the model responded."
+              echo
+              echo "This is the first real-model confirmation for this repository. Record it in ROADMAP.md."
+            else
+              echo "**FAIL** — see the log above for the stage that failed."
+              echo
+              echo "- \`reachability\` failed: a network problem, not a key problem."
+              echo "- \`completion\` failed with auth: the key is wrong or revoked."
+              echo "- \`completion\` failed with model: the model name does not exist for this provider."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

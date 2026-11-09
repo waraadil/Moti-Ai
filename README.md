@@ -115,6 +115,40 @@ key — the two failures people most often confuse.
 A passing run means real AI analysis is working. A `FAIL reachability` line means
 your network cannot reach the host: that is not a code or key problem.
 
+### Verifying from a phone (no computer needed)
+
+`npm run verify:provider` needs a terminal, which you may not have. The repository
+ships a GitHub Actions workflow that runs the exact same script on a cloud runner
+with normal internet access, so you can prove the AI layer works from a phone
+browser.
+
+**You never send the key to anyone, including this project.** It goes into
+GitHub's encrypted secret store, which the workflow reads at run time:
+
+1. Open the repository on github.com.
+2. **Settings → Secrets and variables → Actions → New repository secret**.
+3. Name it `MOTI_ANALYSIS_API_KEY`, paste your key as the value. Add the secret.
+4. *(Optional)* Add `MOTI_ANALYSIS_PROVIDER` — e.g. `groq`, `openai`, `gemini`,
+   `anthropic`. If you skip it, the workflow defaults to `groq`.
+   Optionally add `MOTI_ANALYSIS_MODEL`.
+5. Go to the **Actions** tab → **Verify AI provider** → **Run workflow**.
+6. Open the run and read the log: it prints `PASS` or `FAIL` per stage.
+
+What this does and does not do:
+
+| | |
+|---|---|
+| Runs on GitHub's servers, not your phone | Yes |
+| Key stored encrypted in GitHub, never in the repo | Yes |
+| Key printed anywhere in the log | No — the script redacts it, and it is passed via `env:`, not a shell command |
+| Runs automatically, spending tokens | No — manual dispatch only |
+| Runnable from a fork's pull request | No — deliberately disabled, so an outside PR cannot exfiltrate the secret |
+
+If it passes, that is genuine confirmation that a real model responded — record it
+in `ROADMAP.md`, because it is the one thing this repository has never been able
+to demonstrate: no live model call has ever succeeded from the development
+sandbox, whose egress is filtered at the TLS handshake for every AI host.
+
 ### Setup, step by step (works from a phone)
 
 1. **Create `.env.local`** in the project root (next to `package.json`), copying

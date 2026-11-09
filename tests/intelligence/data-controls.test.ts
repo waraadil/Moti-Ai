@@ -90,6 +90,8 @@ beforeEach(() => {
   fake = createFakeSupabase();
   client = fake as unknown as ServerSupabaseClient;
   seed();
+  // The deletion RPCs read identity from auth.uid(); the fake mirrors that.
+  fake.state.currentUserId = ALICE;
 });
 
 describe("export", () => {
@@ -150,6 +152,8 @@ describe("deleteContactData", () => {
   it("removes the contact and everything derived from it", async () => {
     const report = await deleteContactData(client, ALICE, ALICE_CONTACT);
 
+    expect(report.rowsDeleted).toBe(true);
+    expect(report.complete).toBe(true);
     expect(report.deleted.contacts).toBe(1);
     expect(fake.state.tables.messages?.some((row) => row.user_id === ALICE)).toBe(false);
     expect(fake.state.tables.contacts?.some((row) => row.id === ALICE_CONTACT)).toBe(false);
@@ -167,6 +171,7 @@ describe("deleteContactData", () => {
     const report = await deleteContactData(client, ALICE, ALICE_CONTACT);
 
     expect(report.filesRemoved).toBe(1);
+    expect(report.complete).toBe(true);
     expect(fake.state.removals).toContain(`${ALICE}/import-a/chat.txt`);
   });
 
@@ -179,18 +184,20 @@ describe("deleteContactData", () => {
   });
 
   /*
-   * If the file cannot be removed, the rows must not go either. Otherwise the
-   * user loses their data while an unreachable copy survives in storage.
+   * Storage cannot join a database transaction, so the rows do commit. The
+   * guarantee moved: the deletion is now reported as INCOMPLETE and the file
+   * path is kept in a retryable queue, rather than pretending either that
+   * nothing happened or that everything finished.
    */
-  it("deletes nothing when the stored file cannot be removed", async () => {
+  it("reports an incomplete deletion when the stored file cannot be removed", async () => {
     fake.state.failRemovals = true;
 
-    await expect(deleteContactData(client, ALICE, ALICE_CONTACT)).rejects.toThrow(
-      /nothing was deleted/,
-    );
+    const report = await deleteContactData(client, ALICE, ALICE_CONTACT);
 
-    expect(fake.state.tables.contacts?.some((row) => row.id === ALICE_CONTACT)).toBe(true);
-    expect(fake.state.tables.messages?.some((row) => row.id === "msg-a")).toBe(true);
+    expect(report.rowsDeleted).toBe(true);
+    expect(report.complete).toBe(false);
+    expect(report.pendingCleanup).toHaveLength(1);
+    expect(fake.state.tables.data_cleanup_jobs).toHaveLength(1);
   });
 });
 
@@ -214,9 +221,14 @@ describe("deleteEverything", () => {
     expect(fake.state.tables.memories?.some((row) => row.user_id === BOB)).toBe(true);
   });
 
-  it("does not delete the auth profile, because that is a separate decision", async () => {
+  it("keeps the profile row but clears its identifying fields", async () => {
     await deleteEverything(client, ALICE);
-    expect(fake.state.tables.profiles?.some((row) => row.id === ALICE)).toBe(true);
+
+    const profile = fake.state.tables.profiles?.find((row) => row.id === ALICE);
+    // The row is the account reference; the personal content in it is gone.
+    expect(profile).toBeDefined();
+    expect(profile?.email).toBeNull();
+    expect(profile?.display_name).toBe("Deleted account");
   });
 
   it("removes every stored file the user owns", async () => {
