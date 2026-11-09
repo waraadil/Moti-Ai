@@ -14,7 +14,7 @@ import { createProvider } from "@/lib/ai";
 import { analysisProviderLabel, runAnalysis, toAnalysisInput } from "./pipeline";
 import { listMessages } from "@/server/messages/repository";
 import { listMemoriesWithEvidence } from "@/server/memories/repository";
-import { latestVersion } from "./repository";
+import { latestVersion, recentTemporalChanges } from "./repository";
 import { analyseConversationStyle } from "@/lib/intelligence/style";
 import { understandConversation } from "@/lib/intelligence/understanding";
 
@@ -73,6 +73,8 @@ export type ContactAnalysisView = {
   trusted: boolean;
   problem: string | null;
   messageCount: number;
+  /** What changed since the previous analysis, newest first. */
+  changes: Array<{ kind: string; summary: string; version: number }>;
 };
 
 export async function loadContactAnalysisView(
@@ -103,6 +105,7 @@ export async function loadContactAnalysisView(
       trusted: true,
       problem: null,
       messageCount: 0,
+      changes: [],
     };
   }
 
@@ -127,9 +130,22 @@ export async function loadContactAnalysisView(
 
   void contactName;
 
+  const temporal = await recentTemporalChanges(supabase, userId, contactId);
+
   return {
     providerLabel,
     latestVersion: version,
+    changes: (temporal?.changes ?? [])
+      .filter(
+        (change): change is { kind?: unknown; summary?: unknown } =>
+          typeof change === "object" && change !== null,
+      )
+      .map((change) => ({
+        kind: String(change.kind ?? "change"),
+        summary: String(change.summary ?? ""),
+        version: temporal?.version ?? 0,
+      }))
+      .slice(0, 8),
     selfProfile: output?.style?.self
       ? {
           summary: output.style.selfSummary ?? "",

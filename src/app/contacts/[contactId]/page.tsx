@@ -299,6 +299,22 @@ export default async function ContactDetailPage({
                     </div>
                   ) : null}
 
+                  {analysis.changes.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-ink-faint text-xs font-medium uppercase">
+                        Since last analysis
+                      </p>
+                      <ul className="mt-1.5 space-y-1">
+                        {analysis.changes.map((change, index) => (
+                          <li key={`${change.kind}-${index}`} className="text-ink-soft text-xs">
+                            <Badge tone="neutral">{change.kind.replace(/_/g, " ")}</Badge>{" "}
+                            {change.summary}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
                   {analysis.openThreads.length > 0 ? (
                     <div className="mt-4">
                       <p className="text-ink-faint text-xs font-medium uppercase">Open threads</p>

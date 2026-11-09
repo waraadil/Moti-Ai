@@ -36,6 +36,7 @@ describe("migrations", () => {
       "0006_row_level_security.sql",
       "0007_storage.sql",
       "0008_intelligence_engine.sql",
+    "0009_temporal_diff.sql",
     ]);
   });
 

@@ -75,6 +75,18 @@ class TableQuery {
     return this;
   }
 
+  /** PostgREST `.not(column, operator, value)` — only the null check is used. */
+  not(column: string, operator: string, value: unknown) {
+    if (operator !== "is") {
+      throw new Error(`fake-supabase: .not() with operator "${operator}" is not implemented`);
+    }
+    if (value !== null) {
+      throw new Error("fake-supabase: .not() only supports 'is null'");
+    }
+    this.nullFilters.push([column, "not-null"]);
+    return this;
+  }
+
   order(column: string, options?: { ascending?: boolean }) {
     this.orders.push({ column, ascending: options?.ascending ?? true });
     return this;

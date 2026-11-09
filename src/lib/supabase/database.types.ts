@@ -206,6 +206,8 @@ export type AnalysisVersionRow = {
   model_name: string | null;
   prompt_version: string | null;
   output: Json | null;
+  /** Changes vs the previous snapshot; null on a first run. */
+  temporal_diff: Json | null;
   error_message: string | null;
   superseded_by: string | null;
   created_at: string;

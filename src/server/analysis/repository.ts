@@ -193,6 +193,8 @@ export type CreateVersionParams = {
   sourceFrom: string | null;
   sourceUntil: string | null;
   output: unknown;
+  /** Changes vs the previous snapshot. Null/omitted on a first run. */
+  temporalDiff?: unknown;
 };
 
 export async function createVersion(
@@ -214,6 +216,7 @@ export async function createVersion(
       model_name: params.modelName,
       prompt_version: params.promptVersion,
       output: params.output as TablesInsert<"analysis_versions">["output"],
+      temporal_diff: (params.temporalDiff ?? null) as TablesInsert<"analysis_versions">["output"],
       completed_at: new Date().toISOString(),
     })
     .select("*")
@@ -298,6 +301,45 @@ export async function findCompletedRun(
   if (error) throw error;
   if (!data || data.status !== "completed" || !data.analysis_version_id) return null;
   return { versionId: data.analysis_version_id };
+}
+
+/**
+ * The most recent temporal changes recorded for a contact.
+ *
+ * A diff is computed during a run and stored on that run's version output, so
+ * the UI can show "what changed since last time" without recomputing it.
+ * Returns the newest version that actually recorded changes.
+ */
+export async function recentTemporalChanges(
+  supabase: ServerSupabaseClient,
+  userId: string,
+  contactId: string,
+  limit = 5,
+): Promise<{ version: number; changes: unknown[]; completedAt: string | null } | null> {
+  const { data, error } = await supabase
+    .from("analysis_versions")
+    .select("version, completed_at, temporal_diff")
+    .eq("user_id", userId)
+    .eq("contact_id", contactId)
+    .eq("status", "completed")
+    .not("temporal_diff", "is", null)
+    .order("version", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  for (const row of data ?? []) {
+    const changes = row.temporal_diff as unknown;
+    if (Array.isArray(changes) && changes.length > 0) {
+      return {
+        version: row.version,
+        changes,
+        completedAt: row.completed_at ?? null,
+      };
+    }
+  }
+
+  return null;
 }
 
 /** The newest non-superseded version for a contact and analysis kind. */

@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { isAppError } from "@/lib/errors";
+import { analyseContact } from "@/server/analysis/run";
 import {
   MAX_UPLOAD_BYTES,
   confirmParticipantsSchema,
@@ -174,6 +175,8 @@ export async function uploadImportAction(formData: FormData): Promise<UploadActi
 export type ConfirmActionResult = {
   ok: boolean;
   message: string;
+  /** Secondary line, e.g. the outcome of the automatic post-import analysis. */
+  detail?: string | null;
   storedMessages?: number;
   contactId?: string;
 };
@@ -191,7 +194,7 @@ export async function confirmImportAction(formData: FormData): Promise<ConfirmAc
   }
 
   try {
-    const { supabase, userId } = await requireSession();
+    const { supabase, userId, email: userEmail } = await requireSession();
 
     const result = await confirmImportParticipants({
       userId,
@@ -206,9 +209,36 @@ export async function confirmImportAction(formData: FormData): Promise<ConfirmAc
     revalidatePath("/contacts");
     revalidatePath(`/contacts/${parsed.data.contactId}`);
 
+    /*
+     * Re-analyse immediately so the contact page reflects the new export.
+     * A failure here must not lose the import: the messages are already stored,
+     * and the user can re-run analysis from the contact page.
+     */
+    let analysisNote: string | null = null;
+    try {
+      const contact = await getContact(supabase, userId, parsed.data.contactId);
+      if (contact) {
+        const analysis = await analyseContact({
+          supabase,
+          userId,
+          contactId: parsed.data.contactId,
+          contactName: contact.display_name,
+          selfName: userEmail ? (userEmail.split("@")[0] ?? null) : null,
+        });
+        analysisNote = analysis.ok
+          ? analysis.message
+          : `Analysis was not run: ${analysis.message}`;
+        revalidatePath(`/contacts/${parsed.data.contactId}`);
+      }
+    } catch (analysisError) {
+      console.error("[moti] post-import analysis failed", analysisError);
+      analysisNote = "Messages were stored, but analysis failed. Open the contact to retry.";
+    }
+
     return {
       ok: true,
       message: `Stored ${result.storedMessages.toLocaleString("en-GB")} messages with ${result.contactLabel}.`,
+      detail: analysisNote,
       storedMessages: result.storedMessages,
       contactId: parsed.data.contactId,
     };

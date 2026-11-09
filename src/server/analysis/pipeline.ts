@@ -240,6 +240,31 @@ export async function runAnalysis(params: RunAnalysisParams): Promise<AnalysisOu
       },
     };
 
+    /*
+     * The diff is computed before the version row so it can be stored on it.
+     * It compares this run against the most recent snapshot, which is the
+     * previous analysis — never against itself.
+     */
+    const previousSnapshot = await latestSnapshot(params.supabase, params.userId, params.contactId);
+    const cutoffAt = input.messages[input.messages.length - 1]?.sentAt ?? new Date().toISOString();
+    const snapshot = buildSnapshot({
+      cutoffAt,
+      messageCount: input.messages.length,
+      understanding,
+      style,
+      // Fingerprints of the facts accepted in this run, so the diff can tell
+      // which memories are genuinely new. Written from the validated candidates
+      // rather than the insert rows, which are built after the version row.
+      memoryFingerprints: memories.accepted.map((candidate) =>
+        memoryFingerprint(candidate.statement),
+      ),
+    });
+    const temporal = diffSnapshots(
+      previousSnapshot?.data as ConversationSnapshot | null,
+      snapshot,
+      understanding,
+    );
+
     const versionRow = await createVersion(params.supabase, {
       userId: params.userId,
       contactId: params.contactId,
@@ -252,6 +277,9 @@ export async function runAnalysis(params: RunAnalysisParams): Promise<AnalysisOu
       sourceFrom: input.messages[0]?.sentAt ?? null,
       sourceUntil: input.messages[input.messages.length - 1]?.sentAt ?? null,
       output,
+      // Null when there was no previous analysis: an empty diff and "never
+      // analysed before" are different states and the UI must distinguish them.
+      temporalDiff: temporal.hasPrevious ? temporal.changes : null,
     });
 
     await supersedePreviousVersions(params.supabase, {
@@ -341,24 +369,6 @@ export async function runAnalysis(params: RunAnalysisParams): Promise<AnalysisOu
       commonPhrases: style.contact.topWords.slice(0, 8).map((entry) => entry.word),
       isPopulated: style.contact.messageCount > 0,
     });
-
-    // --- Temporal --------------------------------------------------------
-    const previous = await latestSnapshot(params.supabase, params.userId, params.contactId);
-    const cutoffAt = input.messages[input.messages.length - 1]?.sentAt ?? new Date().toISOString();
-
-    const snapshot = buildSnapshot({
-      cutoffAt,
-      messageCount: input.messages.length,
-      understanding,
-      style,
-      memoryFingerprints: memoryRows.map((row) => row.candidate.fingerprint),
-    });
-
-    const temporal = diffSnapshots(
-      previous?.data as ConversationSnapshot | null,
-      snapshot,
-      understanding,
-    );
 
     await saveSnapshot(params.supabase, {
       userId: params.userId,
