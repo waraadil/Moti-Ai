@@ -37,6 +37,7 @@ describe("migrations", () => {
       "0007_storage.sql",
       "0008_intelligence_engine.sql",
     "0009_temporal_diff.sql",
+    "0010_away_mode.sql",
     ]);
   });
 
@@ -62,6 +63,11 @@ describe("migrations", () => {
         "memory_evidence",
         "analysis_versions",
         "reply_drafts",
+        // Away Mode
+        "away_settings",
+        "away_contact_permissions",
+        "away_prepared_replies",
+        "away_events",
       ]),
     );
   });
@@ -114,6 +120,85 @@ describe("tenant isolation", () => {
         ]),
       ),
     ).rejects.toThrow(/row-level security/i);
+  });
+
+  it("hides Away Mode settings from other users", async () => {
+    await testDb.db.query(
+      "insert into public.away_settings (user_id, status) values ($1, 'active')",
+      [alice],
+    );
+
+    const asBob = await asUser(testDb.db, bob, () =>
+      testDb.db.query("select id from public.away_settings"),
+    );
+    expect(asBob.rows).toHaveLength(0);
+
+    const asAlice = await asUser(testDb.db, alice, () =>
+      testDb.db.query("select id from public.away_settings"),
+    );
+    expect(asAlice.rows).toHaveLength(1);
+  });
+
+  it("refuses Away Mode settings claiming another user's id", async () => {
+    await expect(
+      asUser(testDb.db, bob, () =>
+        testDb.db.query("insert into public.away_settings (user_id) values ($1)", [alice]),
+      ),
+    ).rejects.toThrow(/row-level security/i);
+  });
+
+  it("hides prepared replies from other users", async () => {
+    const { rows } = await testDb.db.query<{ id: string }>(
+      "insert into public.contacts (user_id, display_name) values ($1, $2) returning id",
+      [alice, "Alice's contact"],
+    );
+    const contactId = rows[0]?.id as string;
+
+    await testDb.db.query(
+      `insert into public.away_prepared_replies (user_id, contact_id, body)
+       values ($1, $2, 'a prepared reply')`,
+      [alice, contactId],
+    );
+
+    const asBob = await asUser(testDb.db, bob, () =>
+      testDb.db.query("select id from public.away_prepared_replies"),
+    );
+    expect(asBob.rows).toHaveLength(0);
+
+    // A reply cannot be approved by someone else: it is not even visible.
+    const approvalAttempt = await asUser(testDb.db, bob, () =>
+      testDb.db.query("update public.away_prepared_replies set state = 'approved'"),
+    );
+    expect(approvalAttempt.rows).toHaveLength(0);
+  });
+
+  it("hides the activity log from other users and never lets it be edited", async () => {
+    await testDb.db.query(
+      "insert into public.away_events (user_id, kind, detail) values ($1, 'mode_enabled', 'on')",
+      [alice],
+    );
+
+    const asBob = await asUser(testDb.db, bob, () =>
+      testDb.db.query("select id from public.away_events"),
+    );
+    expect(asBob.rows).toHaveLength(0);
+
+    /*
+     * The log is append-only twice over: no update grant and no update policy.
+     * So even the owner cannot rewrite it. A history the subject can edit would
+     * not be evidence of anything.
+     */
+    await expect(
+      asUser(testDb.db, alice, () =>
+        testDb.db.query("update public.away_events set detail = 'tampered'"),
+      ),
+    ).rejects.toThrow(/permission denied|row-level security/i);
+
+    const stillOriginal = await testDb.db.query<{ detail: string }>(
+      "select detail from public.away_events where user_id = $1",
+      [alice],
+    );
+    expect(stillOriginal.rows[0]?.detail).toBe("on");
   });
 
   it("hides messages from other users", async () => {

@@ -34,6 +34,13 @@ const NAV_ITEMS: NavItem[] = [
       "M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 15v1.5A1.5 1.5 0 005.5 18h9a1.5 1.5 0 001.5-1.5V15",
   },
   {
+    href: "/away",
+    label: "Away Mode",
+    description: "Prepare replies while you're unavailable",
+    iconPath:
+      "M10 2.5a7.5 7.5 0 100 15 7.5 7.5 0 000-15zm0 3a4.5 4.5 0 100 9 4.5 4.5 0 000-9z",
+  },
+  {
     href: "/settings",
     label: "Settings",
     description: "Account and data controls",

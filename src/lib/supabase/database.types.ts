@@ -242,6 +242,66 @@ export type ConversationSnapshotRow = {
   created_at: string;
 };
 
+// --- Away Mode ---------------------------------------------------------------
+
+export type AwayStatus = "active" | "scheduled" | "off";
+export type AwayPermission = "draft_only" | "silent";
+export type AwayApprovalState = "pending" | "approved" | "rejected" | "expired";
+export type AwayEventKind =
+  | "mode_enabled"
+  | "mode_disabled"
+  | "window_expired"
+  | "reply_prepared"
+  | "reply_approved"
+  | "reply_rejected"
+  | "permission_changed";
+
+export type AwaySettingsRow = {
+  id: string;
+  user_id: string;
+  status: AwayStatus;
+  starts_at: string | null;
+  ends_at: string | null;
+  away_message: string | null;
+  default_permission: AwayPermission;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AwayContactPermissionRow = {
+  id: string;
+  user_id: string;
+  contact_id: string;
+  permission: AwayPermission;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AwayPreparedReplyRow = {
+  id: string;
+  user_id: string;
+  contact_id: string;
+  in_reply_to_message_id: string | null;
+  body: string;
+  state: AwayApprovalState;
+  model_provider: string | null;
+  model_name: string | null;
+  prompt_version: string | null;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AwayEventRow = {
+  id: string;
+  user_id: string;
+  contact_id: string | null;
+  kind: AwayEventKind;
+  detail: string | null;
+  data: Json | null;
+  created_at: string;
+};
+
 export type ReplyDraftRow = {
   id: string;
   user_id: string;
@@ -284,6 +344,11 @@ export type Database = {
       reply_drafts: TableDefinition<ReplyDraftRow>;
       analysis_runs: TableDefinition<AnalysisRunRow>;
       conversation_snapshots: TableDefinition<ConversationSnapshotRow>;
+      away_settings: TableDefinition<AwaySettingsRow>;
+      away_contact_permissions: TableDefinition<AwayContactPermissionRow>;
+      away_prepared_replies: TableDefinition<AwayPreparedReplyRow>;
+      // Append-only: the log is never updated or deleted, so `Update` is never.
+      away_events: TableDefinition<AwayEventRow, Partial<AwayEventRow>, never>;
     };
     Views: Record<string, never>;
     Functions: {
@@ -302,6 +367,10 @@ export type Database = {
       memory_status: MemoryStatus;
       reply_draft_status: ReplyDraftStatus;
       evidence_status: EvidenceStatus;
+      away_status: AwayStatus;
+      away_permission: AwayPermission;
+      away_approval_state: AwayApprovalState;
+      away_event_kind: AwayEventKind;
     };
     CompositeTypes: Record<string, never>;
   };

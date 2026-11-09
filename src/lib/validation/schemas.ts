@@ -178,3 +178,36 @@ export type MemoryCorrectionInput = z.infer<typeof memoryCorrectionSchema>;
 
 /** Tone hint for a reply draft; free text, bounded. */
 export const replyToneSchema = z.string().trim().max(40).optional();
+
+/**
+ * Away Mode settings.
+ *
+ * `startsAt`/`endsAt` arrive as strings from an `<input type="datetime-local">`.
+ * Each is validated as a real instant rather than merely non-empty, so a typo
+ * cannot produce a window that silently never applies.
+ */
+export const awaySettingsSchema = z
+  .object({
+    status: z.enum(["active", "scheduled", "off"]),
+    startsAt: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "That start time is not a valid date.")
+      .nullable(),
+    endsAt: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "That end time is not a valid date.")
+      .nullable(),
+    awayMessage: z.string().trim().max(280, "Keep the away message under 280 characters.").nullable(),
+    defaultPermission: z.enum(["draft_only", "silent"]),
+  })
+  .refine(
+    (value) =>
+      !value.startsAt || !value.endsAt || Date.parse(value.endsAt) > Date.parse(value.startsAt),
+    { message: "The end of the window must be after its start.", path: ["endsAt"] },
+  );
+
+export type AwaySettingsInput = z.infer<typeof awaySettingsSchema>;

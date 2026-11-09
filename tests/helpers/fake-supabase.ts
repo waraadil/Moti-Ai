@@ -214,7 +214,9 @@ class TableQuery {
       const updated: Row[] = [];
       for (const row of this.applyFilters(rows)) {
         Object.assign(row, this.updateValues);
-        updated.push(row);
+        // Returned rows are copies: a caller that reads before updating must not
+        // see its earlier snapshot change underneath it.
+        updated.push({ ...row });
       }
       return { data: updated, error: null };
     }
@@ -243,7 +245,12 @@ class TableQuery {
       found = found.slice(this.rangeSpec.from, this.rangeSpec.to + 1);
     }
     if (this.limitCount !== null) found = found.slice(0, this.limitCount);
-    return { data: found, error: null };
+    /*
+     * Copies, not references. PostgREST returns values over the wire, so caller
+     * and table never share an object. Sharing them let an update mutate a
+     * value the caller had already read, which hid a before/after comparison.
+     */
+    return { data: found.map((row) => ({ ...row })), error: null };
   }
 }
 
@@ -295,6 +302,17 @@ const COLUMN_DEFAULTS: Record<string, Record<string, unknown>> = {
   memories: { status: "active", is_user_confirmed: false, is_sensitive: false },
   reply_drafts: { status: "draft", used_memory_ids: [] },
   analysis_runs: { status: "pending", attempts: 0, input_messages: 0 },
+  // Away Mode defaults mirror the migration, so a test that forgets to set a
+  // field behaves like production rather than like an unconstrained table.
+  away_settings: {
+    status: "off",
+    starts_at: null,
+    ends_at: null,
+    away_message: null,
+    default_permission: "draft_only",
+  },
+  away_contact_permissions: { permission: "draft_only" },
+  away_prepared_replies: { state: "pending", decided_at: null },
 };
 
 let idCounter = 0;
