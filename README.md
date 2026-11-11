@@ -117,10 +117,21 @@ your network cannot reach the host: that is not a code or key problem.
 
 ### Verifying from a phone (no computer needed)
 
+> **Precondition — read this first.** `workflow_dispatch` only appears in the
+> GitHub UI when the workflow file exists on the repository's **default branch**
+> (`main`). At the time of writing, `main` contains only `LICENSE` and
+> `README.md`; the whole application and `.github/workflows/verify-provider.yml`
+> live on the feature branch. Verified with the GitHub API:
+> `main` → 2 tree entries, no `.github/` (404); branch → 218 entries.
+>
+> So **until the pull request is merged into `main`, the Actions workflow cannot
+> be dispatched and step 5 below will not be offered.** This was previously
+> documented as runnable; it is not, yet.
+
 `npm run verify:provider` needs a terminal, which you may not have. The repository
 ships a GitHub Actions workflow that runs the exact same script on a cloud runner
 with normal internet access, so you can prove the AI layer works from a phone
-browser.
+browser — once it is on `main`.
 
 **You never send the key to anyone, including this project.** It goes into
 GitHub's encrypted secret store, which the workflow reads at run time:

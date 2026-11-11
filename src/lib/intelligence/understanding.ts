@@ -11,6 +11,7 @@
  */
 
 import type { AnalysisMessage } from "./types";
+import { compileKeywordSet } from "./keyword-matcher";
 
 export type EvidenceStatus = "direct" | "inferred";
 
@@ -236,6 +237,16 @@ const TOPIC_RULES: Array<{ label: string; keywords: string[] }> = [
   },
 ];
 
+/**
+ * Topic rules with their keyword patterns compiled once at module load instead
+ * of once per (message x keyword) pair. See keyword-matcher.ts for why.
+ */
+const COMPILED_TOPIC_RULES = TOPIC_RULES.map((rule) => ({
+  label: rule.label,
+  // One alternation per rule instead of one RegExp per keyword.
+  pattern: compileKeywordSet(rule.keywords),
+}));
+
 const PLAN_KEYWORDS = [
   "let's",
   "lets",
@@ -258,6 +269,9 @@ const PLAN_KEYWORDS = [
   "i'm going to",
   "im going to",
 ];
+
+/** Plan keywords, compiled once instead of per message. */
+const COMPILED_PLAN_KEYWORDS = compileKeywordSet(PLAN_KEYWORDS);
 
 const AGREEMENT_WORDS = [
   "yes",
@@ -301,10 +315,6 @@ const TIME_PATTERN =
 const MONEY_PATTERN =
   /(?:[$£€₹]\s?\d+(?:[.,]\d{1,2})?|\b\d+(?:[.,]\d{2})?\s?(?:pounds?|dollars?|euros?|rupees?)\b)/gi;
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function excerptOf(body: string, max = 220): string {
   const trimmed = body.replace(/\s+/g, " ").trim();
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
@@ -339,10 +349,8 @@ export function extractTopics(messages: readonly AnalysisMessage[]): Topic[] {
   for (const message of text) {
     const lower = message.body.toLowerCase();
 
-    for (const rule of TOPIC_RULES) {
-      const hit = rule.keywords.some((keyword) =>
-        new RegExp(`(^|\\W)${escapeRegex(keyword)}(\\W|$)`, "i").test(lower),
-      );
+    for (const rule of COMPILED_TOPIC_RULES) {
+      const hit = rule.pattern.test(lower);
       if (!hit) continue;
 
       const existing = byLabel.get(rule.label);
@@ -384,9 +392,7 @@ export function extractPlans(messages: readonly AnalysisMessage[]): Plan[] {
     const message = text[index] as AnalysisMessage;
     const lower = message.body.toLowerCase();
 
-    const proposes = PLAN_KEYWORDS.some((keyword) =>
-      new RegExp(`(^|\\W)${escapeRegex(keyword)}(\\W|$)`, "i").test(lower),
-    );
+    const proposes = COMPILED_PLAN_KEYWORDS.test(lower);
     if (!proposes) continue;
 
     // Look at the next few messages for a reaction. Three is enough to catch

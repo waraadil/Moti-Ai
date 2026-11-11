@@ -314,7 +314,7 @@ on the one decision that must never happen by accident.
 | RLS verified by test | Done | 22 schema tests including four new Away Mode isolation tests |
 | No secrets in the client bundle | Verified | `grep` over `.next/static` finds no key names |
 | Accessibility | Partly | Labels, `role="alert"`/`status` on feedback, semantic lists. Not audited with a screen reader |
-| Performance | Not measured | No profiling done; honesty requires saying so |
+| Performance | **Measured** 2026-11-06 | See `BENCHMARKS.md`; one real optimisation landed (up to 8.7× on understanding) |
 | Deployment docs | Done | `README.md` setup section, `.env.example` |
 | Theme (dark mode) | **Not done** | Committed theme only; a dark mode was never requested and is not implemented |
 | Android/mobile | Working by design | Responsive shell; verified by build and markup, not on a device |
@@ -401,16 +401,24 @@ next build     clean; /away, /integrations, /api/export registered
 | 2 | No AI API key exists in this environment | Standard #4 remains unmet | **User action, no computer needed:** add `MOTI_ANALYSIS_API_KEY` as a GitHub Actions secret, then run the workflow. The key never enters chat or the repo |
 | 3 | No Meta/WhatsApp credentials, and no webhook handler exists | No live platform connection | Deliberate: Phase 5 added the capability model, not a connection |
 | 4 | Dark mode not implemented | Cosmetic | Not requested; would need a design decision |
-| 5 | Performance never measured | Unknown behaviour on very large exports | Future work |
+| 5 | ~~Performance never measured~~ **Resolved 2026-11-06** | Benchmarked; see `BENCHMARKS.md`. Remaining gaps are listed there | Environment — measured in `BENCHMARKS.md` |
 
 None of these are hidden failures. The app is functional without resolving any of
 them; items 1 and 2 are about *verifying* the AI provider, not about the app
 working.
 
-**Items 1 and 2 now have a route that needs no computer:** `.github/workflows/verify-provider.yml`
-runs the same self-verification script on a GitHub runner, with the key held in an
-encrypted Actions secret. See README → "Verifying from a phone". The blocker
-stays open until someone actually runs it and records the result here.
+**Items 1 and 2 have a route that needs no computer, but it is not usable yet.**
+`.github/workflows/verify-provider.yml` runs the same self-verification script on a
+GitHub runner with the key in an encrypted Actions secret. However,
+`workflow_dispatch` is only offered when the file is on the **default branch**, and
+`main` still contains just `LICENSE` and `README.md`. Checked with the GitHub API:
+`gh run list --workflow=verify-provider.yml` → `404 Not Found`; `main/.github` →
+`404`; branch tree → 218 entries including the workflow.
+
+So this is now **blocked on merging PR #1**, not on the user's key alone. An
+earlier revision of this file described it as runnable; that was wrong and is
+corrected here. The blocker stays open until the file is on `main`, the workflow
+is actually dispatched, and the result is recorded here.
 
 ### Outstanding after this review
 
@@ -421,7 +429,7 @@ stays open until someone actually runs it and records the result here.
 | Failure-injection tests | 29 new tests across fake and real database |
 | Cloud verification workflow | Added, not yet executed — needs the user's key |
 | Dark mode | Still not implemented (never requested) |
-| Performance profiling | Still not measured |
+| Performance profiling | **Done** — `BENCHMARKS.md`, plus a measured optimisation and 6 regression tests |
 
 ---
 

@@ -18,7 +18,9 @@
     "db:verify": "vitest run tests/schema.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify:provider": "tsx --tsconfig scripts/tsconfig.json scripts/verify-provider.ts"
+    "verify:provider": "tsx --tsconfig scripts/tsconfig.json scripts/verify-provider.ts",
+    "bench": "tsx --tsconfig scripts/tsconfig.json scripts/bench.ts",
+    "bench:mem": "node --expose-gc --import tsx scripts/bench-mem.ts"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
