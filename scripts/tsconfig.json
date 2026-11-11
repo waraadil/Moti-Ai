@@ -1,0 +1,19 @@
+{
+  /*
+   * tsconfig for CLI scripts run with tsx (see npm run verify:provider).
+   *
+   * The app's AI modules carry the `server-only` marker, which throws outside a
+   * Next.js server graph. These scripts ARE server-side local tools, so the
+   * marker is redirected to the same empty stub the test suite uses. The app
+   * build is unaffected: Next.js resolves the real package and still fails the
+   * build if a Client Component imports any of these modules.
+   */
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["../src/*"],
+      "server-only": ["../tests/helpers/server-only-stub.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}
