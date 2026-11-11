@@ -21,7 +21,7 @@
 | 3 | Personalised Reply Intelligence | **Complete** | `5444f4c` |
 | 4 | Away Mode & Controlled AI Assistance | **Complete** | `1689c9e` |
 | 5 | WhatsApp & Platform Integration | **Complete** (capability model only — see below) | `f6facbe` |
-| 6 | Finalisation, Security & Deployment | **Complete** (export + deletion + docs) | see PR |
+| 6 | Finalisation, Security & Deployment | **Complete** (export + deletion + docs; cloud deployment **blocked** — see Live deployment) | see PR |
 
 ### Status vocabulary used in this file
 
@@ -422,6 +422,155 @@ stays open until someone actually runs it and records the result here.
 | Cloud verification workflow | Added, not yet executed — needs the user's key |
 | Dark mode | Still not implemented (never requested) |
 | Performance profiling | Still not measured |
+
+---
+
+## Live deployment (2026-11-06)
+
+A dedicated Supabase project was created for this product. No existing project
+was reused, modified, paused or deleted — the two pre-existing projects
+(`oislvoybwzlheiiklzet`, `qcukxlhxzheoemgxuhgw`) were left untouched, and no
+Vercel project belonging to any other product was read or changed.
+
+### Supabase — provisioned and verified
+
+| Property | Value |
+| --- | --- |
+| Project name | `moti-ai` |
+| Project ref | `nmvsfqersgcuonnxphag` |
+| Organisation | `pgomvvsiozhdynzesclw` ("waraadil's Org") |
+| Region | `ap-south-1` |
+| Engine | PostgreSQL 17.11 |
+| Status | `ACTIVE_HEALTHY` (db, auth, rest and storage all healthy) |
+
+The migration history in the cloud project, oldest first. The repository keeps
+eleven files (`0001`–`0011`); some were split for transport, so there are
+nineteen cloud migrations. Concatenating them in this order reproduces the
+eleven repository files exactly.
+
+```
+20261111060014  foundation_enums_and_helpers                       (0001)
+20261111060024  identity_profiles_and_contacts                     (0002)
+20261111060040  conversations_imports_and_messages                 (0003)
+20261111060059  analysis_versions_and_communication_profiles       (0004 part 1)
+20261111060110  analysis_relationships_memories_and_drafts          (0004 part 2)
+20261111060120  tenant_integrity_composite_keys                    (0005 part 1)
+20261111060128  tenant_integrity_remaining_fks                     (0005 part 2)
+20261111060135  tenant_integrity_semantic_checks                   (0005 part 3)
+20261111060145  row_level_security                                 (0006)
+20261111060155  storage_buckets_and_object_policies                (0007)
+20261111060205  intelligence_engine_support_part1                  (0008 part 1)
+20261111060215  intelligence_engine_support_part2                  (0008 part 2)
+20261111060221  persist_temporal_diff                              (0009)
+20261111060231  away_mode                                         (0010 part 1)
+20261111060239  away_mode_events_and_rls                           (0010 part 2)
+20261111060249  reliable_deletion_cleanup_queue_and_anonymise      (0011 part 1)
+20261111060259  reliable_deletion_contact_scope                    (0011 part 2)
+20261111060308  reliable_deletion_account_scope                    (0011 part 3)
+20261111060315  reliable_deletion_retry_and_privileges             (0011 part 4)
+```
+
+### What was checked against the live database, not a mock
+
+| Check | Result |
+| --- | --- |
+| Tables created | **18** — all 18 with `relrowsecurity = true` |
+| Policies | **61** (42 on application tables from `0006`, plus storage and 0011) |
+| Storage buckets | **2** — `chat-imports` (50 MB cap), `analysis` (10 MB cap), both private |
+| Deletion functions | **4** — `delete_contact_data`, `delete_all_user_data`, `anonymise_profile`, `record_cleanup_failure`, all `SECURITY DEFINER` |
+| `anon` role blocked | **Refused**: `permission denied for table contacts` (42501) |
+| Signup profile mirror | **Works** — inserting into `auth.users` created the `profiles` row via the trigger |
+
+Row Level Security was proven by behaviour, not by inspection. Against the live
+project, using a real `authenticated` JWT sub claim:
+
+1. Seeded a user, contact, chat import, message, memory and evidence row using
+   the `service_role` connection.
+2. Called `delete_contact_data(<contact>)` as that user. It returned
+   `deleted: {contacts: 1, memories: 1, messages: 1, chat_imports: 1,
+   memory_evidence: 1}`, `queued_files: 1`, **`complete: false`** — the file was
+   queued rather than silently assumed deleted. Row counts afterwards were
+   `0, 0, 0, 0, 0` with `1` cleanup job remaining.
+3. Called `anonymise_profile(<a different user's id>)` and it was **rejected**
+   with `42501: caller may only anonymise their own profile`. Called it for the
+   caller's own id, and the profile became `email = null`,
+   `display_name = 'Deleted account'`, `timezone = 'UTC'`.
+4. Called `delete_all_user_data(true)` while a cleanup job was still queued and
+   it honestly returned **`complete: false`**. After draining the queue it
+   returned **`complete: true`**.
+5. Removed the test user; the cascade left `profiles = 0`, `cleanup jobs = 0`,
+   `auth.users = 0`. **No test data remains in the live project.**
+
+### Vercel — project created, deployment blocked
+
+| Property | Value |
+| --- | --- |
+| Project name | `moti-ai` |
+| Project id | `prj_RRvjKITtg3rL0qmM2Zk8YwjH3U3S` |
+| Scope | team `team_X0E2WScqWtoyUai3qMirpTxo` (personal hobby account) |
+| Framework | `nextjs` |
+| Environment variables | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `MOTI_ANALYSIS_PROVIDER=deterministic` — all present, type `encrypted`, target production/preview/development |
+
+The four variables were confirmed to reach the build: a dependency-free probe
+deployment showed all four in its build-time `env` list.
+
+**The production deployment itself has not succeeded.** Two independent reasons,
+both external to this repository:
+
+| # | Blocker | Detail |
+| --- | --- | --- |
+| 1 | No GitHub login connection on the Vercel account | `create_project` with `git_repository` was rejected: *"Failed to link waraadil/Moti-Ai. You need to add a Login Connection to your GitHub account first."* Without that link Vercel cannot read the repository. |
+| 2 | Vercel's GitHub API quota is exhausted | Every `create_deployment` with a `gitSource` returns `429 Too Many Requests … GitHub API rate limit exceeded`. This is Vercel's own GitHub access, not this sandbox's: the same sandbox token still had 4,996/5,000 requests remaining. |
+| 3 | Direct file upload is impractical here | The upload path does work (a probe deployment built), but the app is 97 files / ≈518 KB of source, which is ≈690 KB of base64, well past the single-call argument limit. Uploading deliberately truncated source would produce a build that fails for the wrong reason. |
+
+No deployment was faked and no partial upload was passed off as a deployment.
+**What is missing is one action on the user's side:** in Vercel → Account
+Settings → Login Connections, connect GitHub. After that the project is already
+configured and a single redeploy of this branch produces the live site.
+
+### Still open
+
+| Item | Status |
+| --- | --- |
+| Vercel production deployment | **Not deployed** — blocked as described above |
+| Supabase site URL / redirect allow-list | **Not set** — must point at the final Vercel URL, which does not exist yet |
+| Live URL smoke test | **Not performed** — there is no live URL |
+| Live AI model call | **Still unverified** — no key was ever available; the deterministic engine is what is configured |
+| WhatsApp credentials and webhook | **Still absent** |
+
+### A working instance was started from the build output
+
+To prove the built artefact runs and is configured against the new project, the
+production server (`next start`) was started from the verified `next build`
+output with the new project's credentials in `.env.local` (git-ignored).
+
+| Route | Result |
+| --- | --- |
+| `/` | 200 |
+| `/login` | 200 |
+| `/signup` | 200 |
+| `/integrations` | 200 |
+| `/settings` | 307 → `/login?next=%2Fsettings` (correct: unauthenticated) |
+| `/api/health` | 503, `supabaseConfigured: true`, `analysisProvider: deterministic` (`isGenerative: false`, `hasApiKey: false`) |
+
+`database` reported `unreachable`, and the cause is the sandbox, not the schema:
+
+```
+curl https://nmvsfqersgcuonnxphag.supabase.co/rest/v1/
+  Connected to ... (172.64.149.246) port 443
+  OpenSSL SSL_connect: SSL_ERROR_SYSCALL
+```
+
+This dev sandbox only permits egress to an allow-list of hosts
+(`api.github.com` and `registry.npmjs.org` return 200; Supabase, like every AI
+provider host, is connection-reset). That is also why the database was verified
+through Supabase's management API rather than over PostgREST from here. On
+Vercel — where egress is unrestricted — this call is expected to succeed, but it
+has **not** been observed succeeding, so it is not claimed as verified.
+
+The client bundle was re-checked after this build: the public project URL is
+present (it is `NEXT_PUBLIC_` by design) and the service-role key value appears
+**0** times in `.next/static`.
 
 ---
 
