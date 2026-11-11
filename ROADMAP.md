@@ -524,17 +524,23 @@ both external to this repository:
 | 3 | Direct file upload is impractical here | The upload path does work (a probe deployment built), but the app is 97 files / ≈518 KB of source, which is ≈690 KB of base64, well past the single-call argument limit. Uploading deliberately truncated source would produce a build that fails for the wrong reason. |
 
 No deployment was faked and no partial upload was passed off as a deployment.
-**What is missing is one action on the user's side:** in Vercel → Account
-Settings → Login Connections, connect GitHub. After that the project is already
-configured and a single redeploy of this branch produces the live site.
+
+**What is missing is one action on the user's side, and it needs no terminal:**
+sign in to Vercel → **Account Settings → Login Connections → Connect GitHub**.
+Once that link exists, the project is already fully configured (framework,
+env vars, Supabase auth redirects) and deploying this branch produces the live
+site at `https://moti-ai-qss2.vercel.app`.
+
+Nothing in the repository needs to change for that to work, which is why the
+remaining step is a connection rather than a commit.
 
 ### Still open
 
 | Item | Status |
 | --- | --- |
 | Vercel production deployment | **Not deployed** — blocked as described above |
-| Supabase site URL / redirect allow-list | **Not set** — must point at the final Vercel URL, which does not exist yet |
-| Live URL smoke test | **Not performed** — there is no live URL |
+| Supabase site URL / redirect allow-list | **Set** — `site_url` = `https://moti-ai-qss2.vercel.app`; allow-list also covers `https://moti-*-qss2.vercel.app/auth/callback` (preview deployments) and `http://localhost:3000` for local work |
+| Live URL smoke test | **Not performed** — there is no live URL yet |
 | Live AI model call | **Still unverified** — no key was ever available; the deterministic engine is what is configured |
 | WhatsApp credentials and webhook | **Still absent** |
 
